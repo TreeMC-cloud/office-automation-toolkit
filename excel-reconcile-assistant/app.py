@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
@@ -23,16 +25,25 @@ def _render_preview(label: str, dataframe: pd.DataFrame) -> None:
     st.dataframe(dataframe.head(20), use_container_width=True, hide_index=True)
 
 
-uploaded_a = st.file_uploader("上传文件 A", type=["csv", "xlsx", "xls"], key="file_a")
-uploaded_b = st.file_uploader("上传文件 B", type=["csv", "xlsx", "xls"], key="file_b")
+project_root = Path(__file__).parent
+sample_a = project_root / "sample_data" / "customers.csv"
+sample_b = project_root / "sample_data" / "orders.csv"
+source_mode = st.radio("数据来源", options=["上传文件", "示例数据"], horizontal=True)
 
-if not uploaded_a or not uploaded_b:
-    st.info("请先上传两份文件。你也可以直接使用 `sample_data` 里的示例文件进行体验。")
-    st.stop()
+if source_mode == "示例数据":
+    source_a = sample_a
+    source_b = sample_b
+    st.success("已切换到内置示例数据，可直接点击“开始核对”。")
+else:
+    source_a = st.file_uploader("上传文件 A", type=["csv", "xlsx", "xls"], key="file_a")
+    source_b = st.file_uploader("上传文件 B", type=["csv", "xlsx", "xls"], key="file_b")
+    if not source_a or not source_b:
+        st.info("请先上传两份文件，或切换到“示例数据”快速体验。")
+        st.stop()
 
 try:
-    sheets_a = list_sheets(uploaded_a)
-    sheets_b = list_sheets(uploaded_b)
+    sheets_a = list_sheets(source_a)
+    sheets_b = list_sheets(source_b)
 except Exception as exc:  # pragma: no cover - Streamlit 交互
     st.error(f"读取文件结构失败：{exc}")
     st.stop()
@@ -44,8 +55,8 @@ with col_sheet_b:
     selected_sheet_b = st.selectbox("文件 B 的 Sheet", options=sheets_b, index=0)
 
 try:
-    df_a = read_dataframe(uploaded_a, selected_sheet_a)
-    df_b = read_dataframe(uploaded_b, selected_sheet_b)
+    df_a = read_dataframe(source_a, selected_sheet_a)
+    df_b = read_dataframe(source_b, selected_sheet_b)
 except Exception as exc:  # pragma: no cover - Streamlit 交互
     st.error(f"读取数据失败：{exc}")
     st.stop()

@@ -18,17 +18,25 @@ st.set_page_config(page_title="自动报表机器人", page_icon="📬", layout=
 st.title("📬 自动报表生成与通知机器人")
 st.caption("上传多份 Excel / CSV，自动生成趋势分析、HTML 报告和消息通知。")
 
-uploaded_files = st.file_uploader(
-    "上传多个数据文件",
-    type=["csv", "xlsx", "xls"],
-    accept_multiple_files=True,
-)
+project_root = Path(__file__).parent
+sample_dir = project_root / "sample_data"
+source_mode = st.radio("数据来源", options=["上传文件", "示例数据"], horizontal=True)
+
+if source_mode == "示例数据":
+    uploaded_files = sorted(sample_dir.glob("*.csv"))
+    st.success("已载入内置样例数据，可直接点击“生成报表”。")
+else:
+    uploaded_files = st.file_uploader(
+        "上传多个数据文件",
+        type=["csv", "xlsx", "xls"],
+        accept_multiple_files=True,
+    )
 
 if not uploaded_files:
-    st.info("请先上传文件。你也可以直接使用 `sample_data/` 里的示例数据。")
+    st.info("请先上传文件，或切换到“示例数据”快速体验。")
     st.stop()
 
-dataframe = load_uploaded_files(uploaded_files)
+dataframe = load_uploaded_files(list(uploaded_files))
 st.subheader("数据预览")
 st.dataframe(dataframe.head(20), use_container_width=True, hide_index=True)
 

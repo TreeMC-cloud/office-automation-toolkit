@@ -6,6 +6,8 @@ import io
 import matplotlib
 
 matplotlib.use("Agg")
+matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans"]
+matplotlib.rcParams["axes.unicode_minus"] = False
 import matplotlib.pyplot as plt
 import pandas as pd
 
