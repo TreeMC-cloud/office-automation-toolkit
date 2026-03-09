@@ -1,0 +1,8 @@
+flowchart TD
+    A[输入 URL / 选择演示页] --> B[抓取列表页 HTML]
+    B --> C[CSS Selector 提取字段]
+    C --> D[追踪详情页正文]
+    D --> E[清洗与去重]
+    E --> F[标签提取与摘要]
+    F --> G[结果预览]
+    G --> H[导出 Excel / CSV]
