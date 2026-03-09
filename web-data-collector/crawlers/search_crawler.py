@@ -64,6 +64,12 @@ def _parse_baidu_results(html: str) -> list[dict[str, str]]:
         if not url:
             continue
 
+        # 百度跳转链接解析
+        if "baidu.com/link" in url:
+            real_url = _resolve_baidu_redirect(url)
+            if real_url:
+                url = real_url
+
         results.append({
             "title": title,
             "url": url,
@@ -72,6 +78,27 @@ def _parse_baidu_results(html: str) -> list[dict[str, str]]:
         })
 
     return results
+
+
+def _resolve_baidu_redirect(url: str) -> str:
+    """跟踪百度跳转链接，获取真实 URL"""
+    import urllib.request
+    try:
+        req = urllib.request.Request(url, method="HEAD", headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        })
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.url
+    except Exception:
+        # HEAD 失败，尝试 GET
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            })
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.url
+        except Exception:
+            return url
 
 
 def _parse_sogou_results(html: str) -> list[dict[str, str]]:

@@ -13,7 +13,10 @@ import customtkinter as ctk
 import pandas as pd
 from PIL import Image
 
-PROJECT_ROOT = Path(__file__).parent
+if getattr(sys, 'frozen', False):
+    PROJECT_ROOT = Path(sys.executable).parent / "_internal"
+else:
+    PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from services.file_ingestion import load_uploaded_files
@@ -27,6 +30,11 @@ from services.exporter import build_report_workbook
 from services.report_renderer import render_html_report
 from services.notifier import build_notification_text, send_email, send_feishu
 from utils.ai_summary import generate_summary
+from services.metrics import cross_analyze
+from services.chart_builder import build_multi_line_base64, build_heatmap_base64
+from services.notifier import send_dingtalk, send_wechat_work
+from services.scheduler import ReportScheduler
+from utils.config_store import load_config, save_config
 
 FREQ_OPTIONS = {"按天": "D", "按周": "W", "按月": "M"}
 
@@ -44,10 +52,15 @@ class ReportApp(ctk.CTk):
         self.result: dict | None = None
         self._chart_images: list = []
 
+        self._cancel_event = threading.Event()
+        self._config = load_config()
+        self._scheduler = None
+
         # 通知配置持久化
         self._notify_config = {
             "feishu_url": "", "smtp_server": "smtp.qq.com", "smtp_port": "465",
             "sender": "", "password": "", "recipients": "",
+            "dingtalk_url": "", "wechat_url": "",
         }
 
         self._build_ui()
@@ -179,6 +192,10 @@ class ReportApp(ctk.CTk):
         self._dim_col_var = ctk.StringVar()
         self._dim_col_cb = ctk.CTkComboBox(mid, variable=self._dim_col_var, state="readonly", width=200)
         self._dim_col_cb.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(mid, text="第二维度列（交叉分析）").pack(anchor="w")
+        self._dim2_col_var = ctk.StringVar()
+        self._dim2_col_cb = ctk.CTkComboBox(mid, variable=self._dim2_col_var, state="readonly", width=200)
+        self._dim2_col_cb.pack(fill="x", pady=(0, 6))
         ctk.CTkLabel(mid, text="趋势粒度").pack(anchor="w")
         self._freq_var = ctk.StringVar(value="按天")
         self._freq_cb = ctk.CTkComboBox(mid, variable=self._freq_var, values=list(FREQ_OPTIONS.keys()), state="readonly", width=200)
@@ -217,12 +234,19 @@ class ReportApp(ctk.CTk):
         self._dim_col_cb.configure(values=dim_options)
         self._dim_col_var.set(dim_cols[0] if dim_cols else "(不选择)")
 
+        self._dim2_col_cb.configure(values=["(不选择)"] + dim_cols)
+        self._dim2_col_var.set("(不选择)")
+
     # ── 4. 执行区 ───────────────────────────────────────────
 
     def _build_action_section(self, parent):
         self._gen_btn = ctk.CTkButton(parent, text="生成报表", height=40,
                                        font=ctk.CTkFont(size=14, weight="bold"), command=self._on_generate)
         self._gen_btn.pack(fill="x", pady=(0, 4))
+
+        self._cancel_btn = ctk.CTkButton(parent, text="停止生成", height=36, fg_color="red",
+                                          command=self._cancel_generate, state="disabled")
+        self._cancel_btn.pack(fill="x", pady=(0, 4))
 
         self._status_label = ctk.CTkLabel(parent, text="", text_color="gray")
         self._status_label.pack(pady=(0, 2))
@@ -250,9 +274,12 @@ class ReportApp(ctk.CTk):
             "freq": FREQ_OPTIONS.get(self._freq_var.get(), "D"),
             "agg": AGG_FUNCS.get(self._agg_var.get(), "sum"),
             "top_n": self._topn_var.get(),
+            "dim2": None if self._dim2_col_var.get() == "(不选择)" else self._dim2_col_var.get(),
         }
 
         self._gen_btn.configure(state="disabled", text="正在生成…")
+        self._cancel_event.clear()
+        self._cancel_btn.configure(state="normal")
         self._progress.pack(fill="x", pady=(0, 8))
         self._progress.set(0)
         self._update_status("⏳ 正在清洗数据…")
@@ -271,12 +298,18 @@ class ReportApp(ctk.CTk):
             top_n = params["top_n"]
 
             # 1. 清洗
+            if self._cancel_event.is_set():
+                self.after(0, self._on_generate_cancelled)
+                return
             self.after(0, self._update_status, "🧹 清洗数据…")
             self.after(0, self._progress.set, 0.1)
             cleaned = coerce_dataframe(df, date_column=date_col, numeric_columns=[value_col])
             quality = compute_data_quality(cleaned, date_col)
 
             # 2. 指标计算
+            if self._cancel_event.is_set():
+                self.after(0, self._on_generate_cancelled)
+                return
             self.after(0, self._update_status, "📊 计算指标…")
             self.after(0, self._progress.set, 0.25)
             overview = compute_overview(cleaned, date_column=date_col, value_column=value_col)
@@ -284,7 +317,18 @@ class ReportApp(ctk.CTk):
             dimension_df = aggregate_by_dimension(cleaned, dimension_column=dim_name, value_column=value_col, top_n=top_n, agg=agg)
             trend_info = detect_trend(trend_df, value_col)
 
+            # 交叉分析
+            dim2 = params.get("dim2")
+            cross_df = pd.DataFrame()
+            heatmap_chart = ""
+            if dim_name and dim2:
+                cross_df = cross_analyze(cleaned, dim_name, dim2, value_col, agg=agg)
+                heatmap_chart = build_heatmap_base64(cross_df, f"{value_col} 交叉分析")
+
             # 3. 摘要
+            if self._cancel_event.is_set():
+                self.after(0, self._on_generate_cancelled)
+                return
             self.after(0, self._update_status, "💡 生成摘要…")
             self.after(0, self._progress.set, 0.4)
             summary_text = generate_summary(
@@ -294,6 +338,9 @@ class ReportApp(ctk.CTk):
             )
 
             # 4. 图表
+            if self._cancel_event.is_set():
+                self.after(0, self._on_generate_cancelled)
+                return
             self.after(0, self._update_status, "📈 生成图表…")
             self.after(0, self._progress.set, 0.55)
             trend_chart = build_line_chart_base64(
@@ -310,6 +357,9 @@ class ReportApp(ctk.CTk):
             ) if not dimension_df.empty else ""
 
             # 5. HTML 报告
+            if self._cancel_event.is_set():
+                self.after(0, self._on_generate_cancelled)
+                return
             self.after(0, self._update_status, "📝 渲染报告…")
             self.after(0, self._progress.set, 0.7)
             template_path = PROJECT_ROOT / "templates" / "report.html"
@@ -333,6 +383,9 @@ class ReportApp(ctk.CTk):
             )
 
             # 6. Excel
+            if self._cancel_event.is_set():
+                self.after(0, self._on_generate_cancelled)
+                return
             self.after(0, self._update_status, "📦 构建 Excel…")
             self.after(0, self._progress.set, 0.85)
             workbook = build_report_workbook(
@@ -347,6 +400,7 @@ class ReportApp(ctk.CTk):
                 "workbook": workbook, "trend_chart": trend_chart,
                 "dimension_chart": dimension_chart, "pie_chart": pie_chart,
                 "trend_info": trend_info, "data_quality": quality,
+                "cross_df": cross_df, "heatmap_chart": heatmap_chart,
             }
             self.after(0, self._progress.set, 1.0)
             self.after(0, self._on_generate_done)
@@ -358,6 +412,7 @@ class ReportApp(ctk.CTk):
     def _on_generate_done(self):
         self._progress.pack_forget()
         self._gen_btn.configure(state="normal", text="生成报表")
+        self._cancel_btn.configure(state="disabled")
         self._update_status("✅ 报表生成完成")
         self._show_results()
 
@@ -369,6 +424,17 @@ class ReportApp(ctk.CTk):
 
     def _update_status(self, text: str):
         self._status_label.configure(text=text)
+
+    def _cancel_generate(self):
+        self._cancel_event.set()
+        self._cancel_btn.configure(state="disabled")
+        self._update_status("⏹ 正在停止…")
+
+    def _on_generate_cancelled(self):
+        self._progress.pack_forget()
+        self._gen_btn.configure(state="normal", text="生成报表")
+        self._cancel_btn.configure(state="disabled")
+        self._update_status("⏹ 已停止")
 
     # ── 5. 结果展示区 ───────────────────────────────────────
 
@@ -427,10 +493,12 @@ class ReportApp(ctk.CTk):
         tab1 = tabview.add("趋势与维度")
         tab2 = tabview.add("摘要")
         tab3 = tabview.add("通知发送")
+        tab4 = tabview.add("交叉分析")
 
         self._fill_tab_trend(tab1, res)
         self._fill_tab_summary(tab2, res)
         self._fill_tab_notify(tab3, res)
+        self._fill_tab_cross(tab4, res)
 
     def _fill_tab_trend(self, parent, res):
         scroll = ctk.CTkScrollableFrame(parent)
@@ -488,6 +556,19 @@ class ReportApp(ctk.CTk):
         txt.insert("0.0", res["summary_text"])
         txt.configure(state="disabled")
 
+    def _fill_tab_cross(self, parent, res):
+        if res.get("heatmap_chart"):
+            ctk.CTkLabel(parent, text="交叉分析热力图", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=8, pady=(8, 2))
+            self._place_chart_image(parent, res["heatmap_chart"])
+        cross_df = res.get("cross_df", pd.DataFrame())
+        if not cross_df.empty:
+            ctk.CTkLabel(parent, text="交叉透视表", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=8, pady=(8, 2))
+            # 把 index 变成列
+            display_df = cross_df.reset_index()
+            self._build_df_treeview(parent, display_df)
+        if not res.get("heatmap_chart") and cross_df.empty:
+            ctk.CTkLabel(parent, text="请选择两个维度列以启用交叉分析", text_color="gray").pack(pady=20)
+
     def _fill_tab_notify(self, parent, res):
         scroll = ctk.CTkScrollableFrame(parent)
         scroll.pack(fill="both", expand=True)
@@ -499,6 +580,18 @@ class ReportApp(ctk.CTk):
         self._feishu_entry.pack(fill="x", padx=8, pady=(0, 8))
         if self._notify_config["feishu_url"]:
             self._feishu_entry.insert(0, self._notify_config["feishu_url"])
+
+        ctk.CTkLabel(scroll, text="钉钉 Webhook（可选）", font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=8, pady=(4, 2))
+        self._dingtalk_entry = ctk.CTkEntry(scroll, placeholder_text="https://oapi.dingtalk.com/robot/send?access_token=...")
+        self._dingtalk_entry.pack(fill="x", padx=8, pady=(0, 8))
+        if self._notify_config.get("dingtalk_url"):
+            self._dingtalk_entry.insert(0, self._notify_config["dingtalk_url"])
+
+        ctk.CTkLabel(scroll, text="企业微信 Webhook（可选）", font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=8, pady=(4, 2))
+        self._wechat_entry = ctk.CTkEntry(scroll, placeholder_text="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...")
+        self._wechat_entry.pack(fill="x", padx=8, pady=(0, 8))
+        if self._notify_config.get("wechat_url"):
+            self._wechat_entry.insert(0, self._notify_config["wechat_url"])
 
         ctk.CTkLabel(scroll, text="邮件配置（可选）", font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=8, pady=(4, 2))
         mail_frame = ctk.CTkFrame(scroll, fg_color="transparent")
@@ -546,6 +639,8 @@ class ReportApp(ctk.CTk):
         self._notify_config["smtp_port"] = self._smtp_port.get().strip()
         self._notify_config["sender"] = self._sender.get().strip()
         self._notify_config["recipients"] = self._recipients.get().strip()
+        self._notify_config["dingtalk_url"] = self._dingtalk_entry.get().strip()
+        self._notify_config["wechat_url"] = self._wechat_entry.get().strip()
 
         notification_text = build_notification_text(res["summary_text"], res["overview"])
         messages: list[str] = []
@@ -559,6 +654,14 @@ class ReportApp(ctk.CTk):
                 if webhook:
                     resp = send_feishu(webhook, notification_text, overview=res["overview"])
                     messages.append(f"飞书发送完成：{resp}")
+                dingtalk_url = self._dingtalk_entry.get().strip()
+                if dingtalk_url:
+                    resp = send_dingtalk(dingtalk_url, notification_text, overview=res["overview"])
+                    messages.append(f"钉钉发送完成：{resp}")
+                wechat_url = self._wechat_entry.get().strip()
+                if wechat_url:
+                    resp = send_wechat_work(wechat_url, notification_text)
+                    messages.append(f"企业微信发送完成：{resp}")
                 if sender and pwd and recip:
                     send_email(
                         smtp_server=self._notify_config["smtp_server"],

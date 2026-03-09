@@ -107,6 +107,57 @@ def build_pie_chart_base64(
     return _fig_to_base64(fig)
 
 
+def build_multi_line_base64(
+    dataframe: pd.DataFrame, x_column: str, y_columns: list[str], title: str,
+) -> str:
+    """多条折线叠加在同一张图上"""
+    if dataframe.empty:
+        return ""
+
+    x = dataframe[x_column].astype(str).tolist()
+    width = max(8, min(len(x) * 0.6, 16))
+    fig, ax = plt.subplots(figsize=(width, 4.5))
+
+    for i, col in enumerate(y_columns):
+        y = dataframe[col].astype(float).tolist()
+        ax.plot(x, y, marker="o", color=COLORS[i % len(COLORS)],
+                linewidth=2, markersize=4, label=col)
+
+    ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+    ax.grid(axis="y", linestyle="--", alpha=0.3)
+    ax.legend(fontsize=9)
+    _auto_xticks(ax, x)
+    fig.tight_layout()
+    return _fig_to_base64(fig)
+
+
+def build_heatmap_base64(pivot_df: pd.DataFrame, title: str) -> str:
+    """热力图（基于透视表）"""
+    if pivot_df.empty:
+        return ""
+
+    data = pivot_df.values.astype(float)
+    fig, ax = plt.subplots(figsize=(max(6, pivot_df.shape[1] * 0.8),
+                                     max(4, pivot_df.shape[0] * 0.5)))
+
+    im = ax.imshow(data, cmap="YlOrRd", aspect="auto")
+    fig.colorbar(im, ax=ax)
+
+    ax.set_xticks(range(len(pivot_df.columns)))
+    ax.set_xticklabels([str(c) for c in pivot_df.columns], rotation=30, ha="right", fontsize=9)
+    ax.set_yticks(range(len(pivot_df.index)))
+    ax.set_yticklabels([str(i) for i in pivot_df.index], fontsize=9)
+
+    # 每个格子显示数值
+    for i in range(data.shape[0]):
+        for j in range(data.shape[1]):
+            ax.text(j, i, f"{data[i, j]:,.0f}", ha="center", va="center", fontsize=8)
+
+    ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+    fig.tight_layout()
+    return _fig_to_base64(fig)
+
+
 # ---------------------------------------------------------------------------
 # 内部工具
 # ---------------------------------------------------------------------------

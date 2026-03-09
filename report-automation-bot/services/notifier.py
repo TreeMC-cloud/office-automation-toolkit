@@ -85,6 +85,66 @@ def _build_feishu_card(text: str, overview: dict) -> dict:
     }
 
 
+def send_dingtalk(webhook_url: str, text: str, overview: dict | None = None, max_retries: int = 3) -> str:
+    """钉钉 Webhook 推送。有 overview 时用 markdown 消息，否则纯文本。"""
+    if overview:
+        md_text = (
+            f"## 📊 自动报表通知\n\n"
+            f"- 最新周期：{overview.get('latest_period', '-')}\n"
+            f"- 总记录数：{overview.get('total_records', 0):,}\n"
+            f"- 总指标值：{overview.get('total_value', 0):,.2f}\n"
+            f"- 均值：{overview.get('average_value', 0):,.2f}\n\n"
+            f"{text[:2000]}"
+        )
+        payload = {"msgtype": "markdown", "markdown": {"title": "自动报表", "text": md_text}}
+    else:
+        payload = {"msgtype": "text", "text": {"content": text}}
+
+    data = json.dumps(payload).encode("utf-8")
+
+    for attempt in range(max_retries):
+        try:
+            req = urllib.request.Request(
+                webhook_url, data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                if result.get("errcode", 0) != 0:
+                    raise RuntimeError(f"钉钉返回错误：{result.get('errmsg', '')}")
+                return json.dumps(result, ensure_ascii=False)
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
+            raise
+
+
+def send_wechat_work(webhook_url: str, text: str, max_retries: int = 3) -> str:
+    """企业微信 Webhook 推送"""
+    payload = {"msgtype": "text", "text": {"content": text}}
+    data = json.dumps(payload).encode("utf-8")
+
+    for attempt in range(max_retries):
+        try:
+            req = urllib.request.Request(
+                webhook_url, data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                if result.get("errcode", 0) != 0:
+                    raise RuntimeError(f"企业微信返回错误：{result.get('errmsg', '')}")
+                return json.dumps(result, ensure_ascii=False)
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
+            raise
+
+
 def send_email(
     smtp_server: str,
     smtp_port: int,

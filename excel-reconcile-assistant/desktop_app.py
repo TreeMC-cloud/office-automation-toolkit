@@ -14,6 +14,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from services.chart_builder import build_match_pie_base64, build_diff_bar_base64
 from services.column_mapper import recommend_field_mapping, recommend_key_columns
 from services.duplicate_detector import find_duplicates
 from services.exporter import build_export_workbook
@@ -21,6 +22,9 @@ from services.file_loader import list_sheets, read_dataframe
 from services.fuzzy_matcher import build_fuzzy_matches
 from services.match_engine import reconcile_dataframes
 from services.report_generator import generate_report
+from utils.config_store import load_config, save_config
+from PIL import Image
+import base64, io
 
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
@@ -95,6 +99,8 @@ class ExcelReconcileApp(ctk.CTk):
         self.field_pair_widgets: list[tuple[ctk.CTkOptionMenu, ctk.CTkOptionMenu]] = []
         self._page_states: dict[str, int] = {}
         self._page_dfs: dict[str, pd.DataFrame] = {}
+        self._cancel_event = threading.Event()
+        self._config = load_config()
 
         self._build_ui()
 
@@ -111,6 +117,12 @@ class ExcelReconcileApp(ctk.CTk):
         self._build_mapping_section()
         self._build_action_section()
         self._build_result_section()
+
+        # 从配置恢复参数
+        if self._config.get("threshold"):
+            self.threshold_var.set(int(self._config["threshold"]))
+        if self._config.get("tolerance") is not None:
+            self.tolerance_var.set(float(self._config["tolerance"]))
 
     # -- file input ---------------------------------------------------------
 
@@ -231,6 +243,11 @@ class ExcelReconcileApp(ctk.CTk):
                                       height=40, command=self._run_reconcile)
         self.run_btn.pack(fill="x", padx=8)
 
+        self.cancel_btn = ctk.CTkButton(sec, text="停止核对", font=ctk.CTkFont(size=13),
+                                         height=36, fg_color="gray", command=self._cancel_reconcile)
+        self.cancel_btn.pack(fill="x", padx=8, pady=(4, 0))
+        self.cancel_btn.pack_forget()
+
         self.status_label = ctk.CTkLabel(sec, text="", text_color="gray")
         self.status_label.pack(pady=(4, 0))
 
@@ -264,7 +281,7 @@ class ExcelReconcileApp(ctk.CTk):
         self.tabview.pack(fill="both", expand=True, padx=4, pady=4)
 
         tab_names = ["匹配结果", "完全匹配", "A 表缺失于 B", "B 表缺失于 A",
-                      "差异明细", "重复记录", "模糊匹配", "核对报告"]
+                      "差异明细", "重复记录", "模糊匹配", "可视化", "核对报告"]
         self.result_trees: dict[str, ttk.Treeview] = {}
         self._pager_widgets: dict[str, dict] = {}
 
@@ -285,6 +302,13 @@ class ExcelReconcileApp(ctk.CTk):
                 right_f.grid(row=0, column=1, sticky="nsew", padx=2, pady=2)
                 ctk.CTkLabel(right_f, text="B 表重复记录").pack(anchor="w", padx=4)
                 self.dup_tree_b = _make_treeview(right_f)
+            elif name == "可视化":
+                vis_scroll = ctk.CTkScrollableFrame(tab)
+                vis_scroll.pack(fill="both", expand=True, padx=4, pady=4)
+                self.pie_label = ctk.CTkLabel(vis_scroll, text="")
+                self.pie_label.pack(pady=(8, 4))
+                self.bar_label = ctk.CTkLabel(vis_scroll, text="")
+                self.bar_label.pack(pady=(4, 8))
             elif name == "核对报告":
                 self.report_text = ctk.CTkTextbox(tab, wrap="word")
                 self.report_text.pack(fill="both", expand=True, padx=4, pady=4)
@@ -352,6 +376,8 @@ class ExcelReconcileApp(ctk.CTk):
         if path:
             self.file_a_path = path
             self.label_a.configure(text=Path(path).name)
+            self._config["last_file_a"] = path
+            save_config(self._config)
             self._update_sheets_a()
 
     def _pick_file_b(self) -> None:
@@ -359,6 +385,8 @@ class ExcelReconcileApp(ctk.CTk):
         if path:
             self.file_b_path = path
             self.label_b.configure(text=Path(path).name)
+            self._config["last_file_b"] = path
+            save_config(self._config)
             self._update_sheets_b()
 
     def _load_sample(self) -> None:
@@ -494,7 +522,9 @@ class ExcelReconcileApp(ctk.CTk):
             messagebox.showwarning("提示", error)
             return
 
-        self.run_btn.configure(state="disabled")
+        self.run_btn.configure(state="disabled", text="核对中…")
+        self.cancel_btn.pack(fill="x", padx=8, pady=(4, 0))
+        self._cancel_event.clear()
         self.progress_bar.pack(fill="x", padx=8, pady=(2, 4))
         self.progress_bar.set(0)
         self._update_status("⏳ 正在准备核对…")
@@ -516,6 +546,9 @@ class ExcelReconcileApp(ctk.CTk):
         def _worker():
             try:
                 # 1. 主键匹配
+                if self._cancel_event.is_set():
+                    self.after(0, self._on_reconcile_cancelled)
+                    return
                 self.after(0, self._update_status, "🔗 正在匹配主键…")
                 self.after(0, self.progress_bar.set, 0.15)
                 results = reconcile_dataframes(
@@ -523,12 +556,18 @@ class ExcelReconcileApp(ctk.CTk):
                 )
 
                 # 2. 重复检测
+                if self._cancel_event.is_set():
+                    self.after(0, self._on_reconcile_cancelled)
+                    return
                 self.after(0, self._update_status, "🔍 正在检测重复记录…")
                 self.after(0, self.progress_bar.set, 0.4)
                 duplicates_a = find_duplicates(self.df_a, key_a)
                 duplicates_b = find_duplicates(self.df_b, key_b)
 
                 # 3. 模糊匹配
+                if self._cancel_event.is_set():
+                    self.after(0, self._on_reconcile_cancelled)
+                    return
                 self.after(0, self._update_status, "🧩 正在模糊匹配…")
                 self.after(0, self.progress_bar.set, 0.6)
                 fuzzy_matches = build_fuzzy_matches(
@@ -537,6 +576,9 @@ class ExcelReconcileApp(ctk.CTk):
                 )
 
                 # 4. 生成报告
+                if self._cancel_event.is_set():
+                    self.after(0, self._on_reconcile_cancelled)
+                    return
                 self.after(0, self._update_status, "📝 正在生成报告…")
                 self.after(0, self.progress_bar.set, 0.8)
                 report_text = generate_report(
@@ -551,6 +593,9 @@ class ExcelReconcileApp(ctk.CTk):
                 )
 
                 # 5. 导出工作簿
+                if self._cancel_event.is_set():
+                    self.after(0, self._on_reconcile_cancelled)
+                    return
                 self.after(0, self._update_status, "📦 正在构建导出文件…")
                 self.after(0, self.progress_bar.set, 0.9)
                 workbook = build_export_workbook(results, duplicates_a, duplicates_b, fuzzy_matches, report_text)
@@ -574,16 +619,39 @@ class ExcelReconcileApp(ctk.CTk):
 
     def _on_reconcile_done(self, bundle: dict) -> None:
         self.result_bundle = bundle
-        self.run_btn.configure(state="normal")
+        self.run_btn.configure(state="normal", text="开始核对")
+        self.cancel_btn.pack_forget()
         self.progress_bar.pack_forget()
         self._update_status("✅ 核对完成")
+        # 保存配置
+        self._config.update({
+            "last_file_a": self.file_a_path,
+            "last_file_b": self.file_b_path,
+            "threshold": self.threshold_var.get(),
+            "tolerance": self.tolerance_var.get(),
+        })
+        save_config(self._config)
         self._show_results()
 
     def _on_reconcile_error(self, msg: str) -> None:
-        self.run_btn.configure(state="normal")
+        self.run_btn.configure(state="normal", text="开始核对")
+        self.cancel_btn.pack_forget()
         self.progress_bar.pack_forget()
         self._update_status("")
         messagebox.showerror("核对失败", msg)
+
+    def _cancel_reconcile(self) -> None:
+        self._cancel_event.set()
+        self.cancel_btn.pack_forget()
+        self.run_btn.configure(state="normal", text="开始核对")
+        self.progress_bar.pack_forget()
+        self._update_status("⛔ 已取消核对")
+
+    def _on_reconcile_cancelled(self) -> None:
+        self.run_btn.configure(state="normal", text="开始核对")
+        self.cancel_btn.pack_forget()
+        self.progress_bar.pack_forget()
+        self._update_status("⛔ 已取消核对")
 
     def _update_status(self, text: str) -> None:
         self.status_label.configure(text=text)
@@ -638,6 +706,22 @@ class ExcelReconcileApp(ctk.CTk):
         # report
         self.report_text.delete("1.0", "end")
         self.report_text.insert("1.0", bundle["report_text"])
+
+        # 可视化
+        try:
+            pie_b64 = build_match_pie_base64(stats)
+            pie_data = base64.b64decode(pie_b64)
+            pie_img = Image.open(io.BytesIO(pie_data))
+            self._pie_ctk = ctk.CTkImage(light_image=pie_img, size=pie_img.size)
+            self.pie_label.configure(image=self._pie_ctk, text="")
+
+            diff_bar_b64 = build_diff_bar_base64(results["mismatch_details"])
+            bar_data = base64.b64decode(diff_bar_b64)
+            bar_img = Image.open(io.BytesIO(bar_data))
+            self._bar_ctk = ctk.CTkImage(light_image=bar_img, size=bar_img.size)
+            self.bar_label.configure(image=self._bar_ctk, text="")
+        except Exception:
+            pass
 
         self.tabview.set("匹配结果")
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from urllib.parse import urlparse, urljoin
 
 from bs4 import BeautifulSoup, Comment, Tag
@@ -433,26 +434,32 @@ def enrich_search_results(
     search_results: list[dict[str, str]],
     expected_fields: list[str],
     progress_callback=None,
+    cancel_event=None,
+    max_workers: int = 5,
 ) -> list[dict[str, str]]:
     """
-    对搜索结果列表逐一访问原始页面并提取结构化数据。
+    对搜索结果并发访问详情页，提取结构化内容。
 
     Parameters
     ----------
-    search_results : list[dict[str, str]]
-        搜索结果列表
-    expected_fields : list[str]
-        期望提取的字段列表
-    progress_callback : callable, optional
-        进度回调 (current_index, total, url)
+    cancel_event : threading.Event, optional
+        取消信号，set 后停止采集
+    max_workers : int
+        并发线程数
     """
+    import random
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     from services.http_client import fetch_html, extract_domain
 
+    total = len(search_results)
     enriched: list[dict[str, str]] = []
+    lock = threading.Lock()
+    counter = [0]  # mutable counter for thread-safe increment
 
-    for i, item in enumerate(search_results):
-        if progress_callback:
-            progress_callback(i, len(search_results), item.get("url", ""))
+    def _process_one(item: dict) -> dict[str, str]:
+        if cancel_event and cancel_event.is_set():
+            return {}
 
         record: dict[str, str] = {
             "title": item.get("title", ""),
@@ -466,6 +473,10 @@ def enrich_search_results(
         url = item.get("url", "")
         if url:
             try:
+                # 随机延迟避免被封
+                time.sleep(random.uniform(0.2, 0.6))
+                if cancel_event and cancel_event.is_set():
+                    return {}
                 html = fetch_html(url, timeout=12)
                 extracted = extract_page_content(html, expected_fields)
                 for field, value in extracted.items():
@@ -473,23 +484,110 @@ def enrich_search_results(
                         record[field] = value
                 if not record.get("title"):
                     record["title"] = item.get("title", "")
-                # 如果没有 source，用域名
                 if not record.get("source") and "source" in expected_fields:
                     record["source"] = record["domain"]
             except Exception as exc:
                 record["error"] = str(exc)[:200]
 
-        # 确保所有期望字段都存在
         for field in expected_fields:
             if field not in record:
                 record[field] = ""
 
-        # 质量评分
         record["quality_score"] = str(_score_record(record, expected_fields))
 
-        enriched.append(record)
+        with lock:
+            counter[0] += 1
+            if progress_callback:
+                progress_callback(counter[0], total, url)
 
-    # 按质量评分降序排列
+        return record
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_process_one, item): item for item in search_results}
+        for future in as_completed(futures):
+            if cancel_event and cancel_event.is_set():
+                pool.shutdown(wait=False, cancel_futures=True)
+                break
+            result = future.result()
+            if result:
+                enriched.append(result)
+
     enriched.sort(key=lambda r: int(r.get("quality_score", "0")), reverse=True)
-
     return enriched
+
+
+def download_images(
+    records: list[dict],
+    output_dir: str,
+    cancel_event=None,
+    progress_callback=None,
+    max_workers: int = 5,
+) -> int:
+    """批量下载采集到的图片到本地文件夹，返回下载成功数"""
+    import hashlib
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from services.http_client import fetch_html
+    from pathlib import Path
+    from urllib.request import urlopen, Request
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    # 收集所有图片 URL
+    image_tasks: list[tuple[str, str]] = []  # (url, record_title)
+    for rec in records:
+        title = rec.get("title", "untitled")[:30]
+        main_img = rec.get("image_url", "")
+        if main_img:
+            image_tasks.append((main_img, title))
+        multi = rec.get("image_urls", "")
+        if multi:
+            for u in multi.split("|"):
+                u = u.strip()
+                if u and u != main_img:
+                    image_tasks.append((u, title))
+
+    if not image_tasks:
+        return 0
+
+    total = len(image_tasks)
+    success = [0]
+    lock = threading.Lock()
+
+    def _download_one(url: str, title: str) -> bool:
+        if cancel_event and cancel_event.is_set():
+            return False
+        try:
+            ext = ".jpg"
+            for e in (".png", ".webp", ".gif", ".jpeg", ".jpg"):
+                if e in url.lower():
+                    ext = e
+                    break
+            name_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+            safe_title = "".join(c for c in title if c.isalnum() or c in " _-")[:20].strip()
+            filename = f"{safe_title}_{name_hash}{ext}"
+
+            req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urlopen(req, timeout=15) as resp:
+                data = resp.read()
+                if len(data) < 1000:  # 太小，可能不是真图片
+                    return False
+                (out / filename).write_bytes(data)
+
+            with lock:
+                success[0] += 1
+                if progress_callback:
+                    progress_callback(success[0], total)
+            return True
+        except Exception:
+            return False
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(_download_one, url, title) for url, title in image_tasks]
+        for f in as_completed(futures):
+            if cancel_event and cancel_event.is_set():
+                pool.shutdown(wait=False, cancel_futures=True)
+                break
+
+    return success[0]

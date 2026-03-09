@@ -180,6 +180,24 @@ def _detect_consecutive(values: list) -> tuple[str, int]:
     return "持平", 0
 
 
+def cross_analyze(
+    dataframe: pd.DataFrame,
+    dim1: str,
+    dim2: str,
+    value_column: str,
+    agg: str = "sum",
+) -> pd.DataFrame:
+    """两个维度交叉分析，返回透视表"""
+    return pd.pivot_table(
+        dataframe,
+        values=value_column,
+        index=dim1,
+        columns=dim2,
+        aggfunc=agg,
+        fill_value=0,
+    )
+
+
 def _empty_overview() -> dict:
     return {
         "total_records": 0, "total_value": 0.0, "average_value": 0.0,
