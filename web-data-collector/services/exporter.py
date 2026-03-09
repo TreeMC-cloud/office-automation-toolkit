@@ -1,4 +1,4 @@
-"""导出 Excel — 支持动态指标"""
+"""导出 Excel — 动态指标、质量评分统计"""
 
 from __future__ import annotations
 
@@ -11,26 +11,45 @@ def build_export_workbook(dataframe: pd.DataFrame) -> bytes:
     """构建 Excel 工作簿，summary 页自动适配可用列"""
     buffer = io.BytesIO()
 
-    # 动态构建摘要指标
     metrics: list[dict[str, object]] = [
-        {"指标": "抓取记录数", "数值": len(dataframe)},
+        {"指标": "采集记录数", "数值": len(dataframe)},
     ]
+
+    if "quality_score" in dataframe.columns and not dataframe.empty:
+        scores = pd.to_numeric(dataframe["quality_score"], errors="coerce")
+        avg_score = scores.mean()
+        if pd.notna(avg_score):
+            metrics.append({"指标": "平均质量评分", "数值": round(avg_score, 1)})
 
     if "priority" in dataframe.columns and not dataframe.empty:
         metrics.append({"指标": "高优先级数量", "数值": int((dataframe["priority"] == "高").sum())})
 
+    if "brand" in dataframe.columns and not dataframe.empty:
+        brands = dataframe["brand"][dataframe["brand"].astype(str).str.strip() != ""]
+        if len(brands) > 0:
+            metrics.append({"指标": "涉及品牌数", "数值": int(brands.nunique())})
+
     if "company" in dataframe.columns and not dataframe.empty:
-        metrics.append({"指标": "唯一公司/来源数", "数值": int(dataframe["company"].nunique())})
+        companies = dataframe["company"][dataframe["company"].astype(str).str.strip() != ""]
+        if len(companies) > 0:
+            metrics.append({"指标": "唯一公司/来源数", "数值": int(companies.nunique())})
     elif "source" in dataframe.columns and not dataframe.empty:
-        metrics.append({"指标": "唯一来源数", "数值": int(dataframe["source"].nunique())})
+        sources = dataframe["source"][dataframe["source"].astype(str).str.strip() != ""]
+        if len(sources) > 0:
+            metrics.append({"指标": "唯一来源数", "数值": int(sources.nunique())})
+
+    if "search_engine" in dataframe.columns and not dataframe.empty:
+        engines = dataframe["search_engine"][dataframe["search_engine"].astype(str).str.strip() != ""]
+        if len(engines) > 0:
+            metrics.append({"指标": "搜索引擎覆盖", "数值": ", ".join(engines.unique())})
 
     if "category" in dataframe.columns and not dataframe.empty:
         metrics.append({"指标": "识别类别数", "数值": int(dataframe["category"].nunique())})
 
-    if "city" in dataframe.columns and not dataframe.empty:
-        non_empty_cities = dataframe["city"][dataframe["city"].astype(str).str.strip() != ""]
-        if len(non_empty_cities) > 0:
-            metrics.append({"指标": "涉及城市数", "数值": int(non_empty_cities.nunique())})
+    if "sentiment" in dataframe.columns and not dataframe.empty:
+        sentiments = dataframe["sentiment"].value_counts()
+        for s_name, s_count in sentiments.items():
+            metrics.append({"指标": f"情感-{s_name}", "数值": int(s_count)})
 
     summary = pd.DataFrame(metrics)
 
