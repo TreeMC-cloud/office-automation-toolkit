@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>{{ title }}</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; margin: 32px; color: #1f2937; }
+    h1, h2 { color: #111827; }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .card { background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; font-size: 14px; }
+    th { background: #f3f4f6; }
+    img { max-width: 100%; border: 1px solid #e5e7eb; border-radius: 12px; margin-top: 12px; }
+    pre { white-space: pre-wrap; background: #0f172a; color: #e2e8f0; padding: 16px; border-radius: 12px; }
+  </style>
+</head>
+<body>
+  <h1>{{ title }}</h1>
+  <div class="grid">
+    <div class="card"><strong>总记录数</strong><div>{{ overview.total_records }}</div></div>
+    <div class="card"><strong>总指标值</strong><div>{{ overview.total_value }}</div></div>
+    <div class="card"><strong>平均值</strong><div>{{ overview.average_value }}</div></div>
+    <div class="card"><strong>最新周期值</strong><div>{{ overview.latest_period_value }}</div></div>
+  </div>
+
+  <h2>自动摘要</h2>
+  <pre>{{ summary_text }}</pre>
+
+  <h2>{{ value_label }} 趋势</h2>
+  {% if trend_chart %}
+  <img src="data:image/png;base64,{{ trend_chart }}" alt="trend-chart" />
+  {% endif %}
+  <table>
+    <thead><tr><th>周期</th><th>{{ value_label }}</th></tr></thead>
+    <tbody>
+      {% for record in trend_records %}
+      <tr><td>{{ record.period }}</td><td>{{ record[value_label] }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>{{ dimension_label }} Top</h2>
+  {% if dimension_chart %}
+  <img src="data:image/png;base64,{{ dimension_chart }}" alt="dimension-chart" />
+  {% endif %}
+  <table>
+    <thead>
+      <tr>
+        <th>{{ dimension_label }}</th>
+        <th>{{ value_label }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for record in dimension_records %}
+      <tr>
+        <td>{{ record[dimension_label] if record[dimension_label] is defined else record.values()|list|first }}</td>
+        <td>{{ record[value_label] }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>原始数据预览</h2>
+  <table>
+    <thead>
+      <tr>
+        {% if preview_records %}
+          {% for key in preview_records[0].keys() %}
+          <th>{{ key }}</th>
+          {% endfor %}
+        {% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for record in preview_records %}
+      <tr>
+        {% for value in record.values() %}
+        <td>{{ value }}</td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>
