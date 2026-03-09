@@ -1,4 +1,4 @@
-"""Excel 智能核对助手 - 桌面版 (customtkinter)"""
+"""Excel 智能核对助手 - 桌面版 (customtkinter) — 全面优化"""
 from __future__ import annotations
 
 import sys
@@ -26,14 +26,15 @@ ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
 FILE_TYPES = [("Excel / CSV 文件", "*.csv *.xlsx *.xls"), ("所有文件", "*.*")]
+_PAGE_SIZE = 100
 
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 
-def populate_treeview(tree: ttk.Treeview, df: pd.DataFrame, max_rows: int | None = None) -> None:
-    """Fill a Treeview with DataFrame content."""
+def _populate_treeview_page(tree: ttk.Treeview, df: pd.DataFrame, page: int = 0) -> int:
+    """分页填充 Treeview，返回总页数"""
     tree.delete(*tree.get_children())
     cols = df.columns.tolist()
     tree["columns"] = cols
@@ -41,13 +42,18 @@ def populate_treeview(tree: ttk.Treeview, df: pd.DataFrame, max_rows: int | None
     for col in cols:
         tree.heading(col, text=col)
         tree.column(col, width=120, minwidth=60, anchor="w")
-    rows = df.head(max_rows) if max_rows else df
-    for _, row in rows.iterrows():
-        tree.insert("", "end", values=[str(row[c]) for c in cols])
+
+    total_pages = max(1, (len(df) + _PAGE_SIZE - 1) // _PAGE_SIZE)
+    start = page * _PAGE_SIZE
+    end = min(start + _PAGE_SIZE, len(df))
+    chunk = df.iloc[start:end]
+
+    for _, row in chunk.iterrows():
+        tree.insert("", "end", values=[str(v) if pd.notna(v) else "" for v in row])
+    return total_pages
 
 
 def _make_treeview(parent) -> ttk.Treeview:
-    """Create a Treeview with scrollbars inside a CTkFrame."""
     frame = ctk.CTkFrame(parent)
     frame.pack(fill="both", expand=True, padx=4, pady=4)
     vsb = ttk.Scrollbar(frame, orient="vertical")
@@ -62,7 +68,6 @@ def _make_treeview(parent) -> ttk.Treeview:
 
 
 def _metric_card(parent, label: str, value: Any, row: int, col: int) -> ctk.CTkLabel:
-    """Create a metric card (label + big value) in a grid."""
     card = ctk.CTkFrame(parent, corner_radius=8)
     card.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
     ctk.CTkLabel(card, text=label, font=ctk.CTkFont(size=12)).pack(pady=(8, 0))
@@ -79,16 +84,17 @@ class ExcelReconcileApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title("📊 Excel 智能核对助手")
-        self.geometry("1200x800")
+        self.geometry("1200x850")
         self.minsize(900, 600)
 
-        # state
         self.file_a_path: str = ""
         self.file_b_path: str = ""
         self.df_a: pd.DataFrame | None = None
         self.df_b: pd.DataFrame | None = None
         self.result_bundle: dict | None = None
         self.field_pair_widgets: list[tuple[ctk.CTkOptionMenu, ctk.CTkOptionMenu]] = []
+        self._page_states: dict[str, int] = {}
+        self._page_dfs: dict[str, pd.DataFrame] = {}
 
         self._build_ui()
 
@@ -97,7 +103,6 @@ class ExcelReconcileApp(ctk.CTk):
     # -----------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        # scrollable main container
         self.main_scroll = ctk.CTkScrollableFrame(self)
         self.main_scroll.pack(fill="both", expand=True, padx=8, pady=8)
 
@@ -128,7 +133,6 @@ class ExcelReconcileApp(ctk.CTk):
 
         ctk.CTkButton(row, text="使用示例数据", width=120, command=self._load_sample).pack(side="left")
 
-        # sheet selectors
         sheet_row = ctk.CTkFrame(sec, fg_color="transparent")
         sheet_row.pack(fill="x", padx=8, pady=(0, 6))
 
@@ -147,7 +151,7 @@ class ExcelReconcileApp(ctk.CTk):
     def _build_preview_section(self) -> None:
         sec = ctk.CTkFrame(self.main_scroll)
         sec.pack(fill="x", padx=4, pady=2)
-        ctk.CTkLabel(sec, text="数据预览", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=8, pady=(6, 2))
+        ctk.CTkLabel(sec, text="数据预览（前 20 行）", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=8, pady=(6, 2))
 
         cols = ctk.CTkFrame(sec, fg_color="transparent")
         cols.pack(fill="both", expand=True, padx=4, pady=4)
@@ -184,18 +188,27 @@ class ExcelReconcileApp(ctk.CTk):
         self.key_b_menu = ctk.CTkOptionMenu(top_row, variable=self.key_b_var, values=[""], width=160)
         self.key_b_menu.pack(side="left", padx=(4, 16))
 
-        ctk.CTkLabel(top_row, text="模糊阈值:").pack(side="left")
+        # 第二行：模糊阈值 + 数值容差
+        param_row = ctk.CTkFrame(sec, fg_color="transparent")
+        param_row.pack(fill="x", padx=8, pady=4)
+
+        ctk.CTkLabel(param_row, text="模糊阈值:").pack(side="left")
         self.threshold_var = ctk.IntVar(value=86)
-        self.threshold_slider = ctk.CTkSlider(top_row, from_=60, to=100, number_of_steps=40, variable=self.threshold_var, width=140)
+        self.threshold_slider = ctk.CTkSlider(param_row, from_=60, to=100, number_of_steps=40, variable=self.threshold_var, width=140)
         self.threshold_slider.pack(side="left", padx=4)
-        self.threshold_label = ctk.CTkLabel(top_row, text="86")
-        self.threshold_label.pack(side="left")
+        self.threshold_label = ctk.CTkLabel(param_row, text="86")
+        self.threshold_label.pack(side="left", padx=(0, 20))
         self.threshold_var.trace_add("write", lambda *_: self.threshold_label.configure(text=str(self.threshold_var.get())))
+
+        ctk.CTkLabel(param_row, text="数值容差:").pack(side="left")
+        self.tolerance_var = ctk.DoubleVar(value=0.0)
+        self.tolerance_entry = ctk.CTkEntry(param_row, textvariable=self.tolerance_var, width=80)
+        self.tolerance_entry.pack(side="left", padx=4)
+        ctk.CTkLabel(param_row, text="（差值 ≤ 容差视为一致）", text_color="gray", font=ctk.CTkFont(size=11)).pack(side="left")
 
         self.recommend_label = ctk.CTkLabel(sec, text="", wraplength=800, anchor="w", text_color="gray")
         self.recommend_label.pack(anchor="w", padx=8)
 
-        # pair count
         pair_row = ctk.CTkFrame(sec, fg_color="transparent")
         pair_row.pack(fill="x", padx=8, pady=4)
         ctk.CTkLabel(pair_row, text="比对字段对数量:").pack(side="left")
@@ -208,16 +221,23 @@ class ExcelReconcileApp(ctk.CTk):
         self.pairs_frame = ctk.CTkFrame(sec, fg_color="transparent")
         self.pairs_frame.pack(fill="x", padx=8, pady=4)
 
-    # -- action -------------------------------------------------------------
+    # -- action + progress --------------------------------------------------
 
     def _build_action_section(self) -> None:
         sec = ctk.CTkFrame(self.main_scroll, fg_color="transparent")
         sec.pack(fill="x", padx=4, pady=4)
+
         self.run_btn = ctk.CTkButton(sec, text="开始核对", font=ctk.CTkFont(size=14, weight="bold"),
                                       height=40, command=self._run_reconcile)
         self.run_btn.pack(fill="x", padx=8)
+
         self.status_label = ctk.CTkLabel(sec, text="", text_color="gray")
-        self.status_label.pack(pady=2)
+        self.status_label.pack(pady=(4, 0))
+
+        self.progress_bar = ctk.CTkProgressBar(sec)
+        self.progress_bar.pack(fill="x", padx=8, pady=(2, 4))
+        self.progress_bar.set(0)
+        self.progress_bar.pack_forget()
 
     # -- results ------------------------------------------------------------
 
@@ -225,10 +245,17 @@ class ExcelReconcileApp(ctk.CTk):
         self.result_frame = ctk.CTkFrame(self.main_scroll)
         self.result_frame.pack(fill="both", expand=True, padx=4, pady=4)
 
+        # 导出按钮（顶部，更容易找到）
+        self.export_top_btn = ctk.CTkButton(
+            self.result_frame, text="📥 导出核对结果工作簿 (.xlsx)",
+            font=ctk.CTkFont(size=13), height=36, command=self._export_workbook,
+        )
+        self.export_top_btn.pack(fill="x", padx=8, pady=(8, 4))
+
         # metrics row
         self.metrics_frame = ctk.CTkFrame(self.result_frame, fg_color="transparent")
         self.metrics_frame.pack(fill="x", padx=4, pady=4)
-        for i in range(5):
+        for i in range(6):
             self.metrics_frame.columnconfigure(i, weight=1)
         self.metric_labels: list[ctk.CTkLabel] = []
 
@@ -239,10 +266,11 @@ class ExcelReconcileApp(ctk.CTk):
         tab_names = ["匹配结果", "完全匹配", "A 表缺失于 B", "B 表缺失于 A",
                       "差异明细", "重复记录", "模糊匹配", "核对报告"]
         self.result_trees: dict[str, ttk.Treeview] = {}
+        self._pager_widgets: dict[str, dict] = {}
+
         for name in tab_names:
             tab = self.tabview.add(name)
             if name == "重复记录":
-                # two side-by-side trees
                 dup_frame = ctk.CTkFrame(tab, fg_color="transparent")
                 dup_frame.pack(fill="both", expand=True)
                 dup_frame.columnconfigure(0, weight=1)
@@ -260,13 +288,60 @@ class ExcelReconcileApp(ctk.CTk):
             elif name == "核对报告":
                 self.report_text = ctk.CTkTextbox(tab, wrap="word")
                 self.report_text.pack(fill="both", expand=True, padx=4, pady=4)
-                self.export_btn = ctk.CTkButton(tab, text="导出核对结果工作簿 (.xlsx)", command=self._export_workbook)
-                self.export_btn.pack(pady=6)
             else:
-                self.result_trees[name] = _make_treeview(tab)
+                tree = _make_treeview(tab)
+                self.result_trees[name] = tree
+                # 分页控件
+                pager = ctk.CTkFrame(tab, fg_color="transparent")
+                pager.pack(fill="x", padx=4, pady=2)
+                prev_btn = ctk.CTkButton(pager, text="◀ 上一页", width=80,
+                                          command=lambda n=name: self._page_prev(n))
+                prev_btn.pack(side="left", padx=4)
+                page_label = ctk.CTkLabel(pager, text="第 1 页 / 共 1 页")
+                page_label.pack(side="left", padx=8)
+                next_btn = ctk.CTkButton(pager, text="下一页 ▶", width=80,
+                                          command=lambda n=name: self._page_next(n))
+                next_btn.pack(side="left", padx=4)
+                count_label = ctk.CTkLabel(pager, text="", text_color="gray")
+                count_label.pack(side="right", padx=8)
+                self._pager_widgets[name] = {
+                    "prev": prev_btn, "next": next_btn,
+                    "label": page_label, "count": count_label,
+                }
 
-        # hide until results ready
         self.result_frame.pack_forget()
+
+    # -----------------------------------------------------------------------
+    # Pagination
+    # -----------------------------------------------------------------------
+
+    def _refresh_paged_tree(self, tab_name: str) -> None:
+        df = self._page_dfs.get(tab_name, pd.DataFrame())
+        page = self._page_states.get(tab_name, 0)
+        tree = self.result_trees.get(tab_name)
+        if tree is None or df.empty:
+            return
+        total_pages = _populate_treeview_page(tree, df, page)
+        widgets = self._pager_widgets.get(tab_name, {})
+        if widgets:
+            widgets["label"].configure(text=f"第 {page + 1} 页 / 共 {total_pages} 页")
+            widgets["count"].configure(text=f"共 {len(df)} 条记录")
+            widgets["prev"].configure(state="normal" if page > 0 else "disabled")
+            widgets["next"].configure(state="normal" if page < total_pages - 1 else "disabled")
+
+    def _page_prev(self, tab_name: str) -> None:
+        page = self._page_states.get(tab_name, 0)
+        if page > 0:
+            self._page_states[tab_name] = page - 1
+            self._refresh_paged_tree(tab_name)
+
+    def _page_next(self, tab_name: str) -> None:
+        df = self._page_dfs.get(tab_name, pd.DataFrame())
+        page = self._page_states.get(tab_name, 0)
+        total_pages = max(1, (len(df) + _PAGE_SIZE - 1) // _PAGE_SIZE)
+        if page < total_pages - 1:
+            self._page_states[tab_name] = page + 1
+            self._refresh_paged_tree(tab_name)
 
     # -----------------------------------------------------------------------
     # File loading
@@ -325,8 +400,8 @@ class ExcelReconcileApp(ctk.CTk):
             messagebox.showerror("错误", f"读取数据失败：{e}")
             return
 
-        populate_treeview(self.preview_tree_a, self.df_a, max_rows=20)
-        populate_treeview(self.preview_tree_b, self.df_b, max_rows=20)
+        _populate_treeview_page(self.preview_tree_a, self.df_a, 0)
+        _populate_treeview_page(self.preview_tree_b, self.df_b, 0)
         self._update_mapping_options()
 
     def _update_mapping_options(self) -> None:
@@ -335,7 +410,6 @@ class ExcelReconcileApp(ctk.CTk):
         cols_a = self.df_a.columns.tolist()
         cols_b = self.df_b.columns.tolist()
 
-        # key column recommendations
         key_recs = recommend_key_columns(cols_a, cols_b)
         default_a = key_recs[0][0] if key_recs else cols_a[0]
         default_b = key_recs[0][1] if key_recs else cols_b[0]
@@ -345,7 +419,6 @@ class ExcelReconcileApp(ctk.CTk):
         self.key_b_menu.configure(values=cols_b)
         self.key_b_var.set(default_b if default_b in cols_b else cols_b[0])
 
-        # field mapping recommendations
         self._recommended_pairs = [p for p in recommend_field_mapping(cols_a, cols_b)
                                     if p[0] != self.key_a_var.get() and p[1] != self.key_b_var.get()]
         if self._recommended_pairs:
@@ -395,39 +468,93 @@ class ExcelReconcileApp(ctk.CTk):
     # Reconcile
     # -----------------------------------------------------------------------
 
-    def _run_reconcile(self) -> None:
+    def _validate_inputs(self) -> str | None:
+        """校验输入，返回错误信息或 None"""
         if self.df_a is None or self.df_b is None:
-            messagebox.showwarning("提示", "请先加载两份数据文件。")
+            return "请先加载两份数据文件。"
+        if self.file_a_path == self.file_b_path and self.sheet_a_var.get() == self.sheet_b_var.get():
+            return "文件 A 和文件 B 相同（同文件同 Sheet），请选择不同的数据源。"
+        if self.df_a.empty:
+            return "文件 A 数据为空。"
+        if self.df_b.empty:
+            return "文件 B 数据为空。"
+        key_a = self.key_a_var.get()
+        key_b = self.key_b_var.get()
+        # 检查比对字段是否和主键重复
+        for menu_l, menu_r in self.field_pair_widgets:
+            cl = menu_l.cget("variable").get() if hasattr(menu_l, "cget") else menu_l._variable.get()
+            cr = menu_r.cget("variable").get() if hasattr(menu_r, "cget") else menu_r._variable.get()
+            if cl == key_a and cr == key_b:
+                return f"比对字段 ({cl} ↔ {cr}) 与主键列相同，请选择不同的字段。"
+        return None
+
+    def _run_reconcile(self) -> None:
+        error = self._validate_inputs()
+        if error:
+            messagebox.showwarning("提示", error)
             return
 
         self.run_btn.configure(state="disabled")
-        self.status_label.configure(text="正在核对，请稍候...")
+        self.progress_bar.pack(fill="x", padx=8, pady=(2, 4))
+        self.progress_bar.set(0)
+        self._update_status("⏳ 正在准备核对…")
 
         key_a = self.key_a_var.get()
         key_b = self.key_b_var.get()
         threshold = self.threshold_var.get()
+        try:
+            tolerance = float(self.tolerance_var.get())
+        except (ValueError, TypeError):
+            tolerance = 0.0
+
         compare_pairs = []
         for menu_l, menu_r in self.field_pair_widgets:
-            compare_pairs.append((menu_l.cget("variable").get() if hasattr(menu_l, "cget") else menu_l._variable.get(),
-                                  menu_r.cget("variable").get() if hasattr(menu_r, "cget") else menu_r._variable.get()))
+            cl = menu_l.cget("variable").get() if hasattr(menu_l, "cget") else menu_l._variable.get()
+            cr = menu_r.cget("variable").get() if hasattr(menu_r, "cget") else menu_r._variable.get()
+            compare_pairs.append((cl, cr))
 
         def _worker():
             try:
-                results = reconcile_dataframes(self.df_a, self.df_b, key_a, key_b, compare_pairs)
+                # 1. 主键匹配
+                self.after(0, self._update_status, "🔗 正在匹配主键…")
+                self.after(0, self.progress_bar.set, 0.15)
+                results = reconcile_dataframes(
+                    self.df_a, self.df_b, key_a, key_b, compare_pairs, tolerance=tolerance,
+                )
+
+                # 2. 重复检测
+                self.after(0, self._update_status, "🔍 正在检测重复记录…")
+                self.after(0, self.progress_bar.set, 0.4)
                 duplicates_a = find_duplicates(self.df_a, key_a)
                 duplicates_b = find_duplicates(self.df_b, key_b)
+
+                # 3. 模糊匹配
+                self.after(0, self._update_status, "🧩 正在模糊匹配…")
+                self.after(0, self.progress_bar.set, 0.6)
                 fuzzy_matches = build_fuzzy_matches(
                     results["missing_in_b"], results["missing_in_a"],
                     key_a, key_b, score_threshold=threshold,
                 )
+
+                # 4. 生成报告
+                self.after(0, self._update_status, "📝 正在生成报告…")
+                self.after(0, self.progress_bar.set, 0.8)
                 report_text = generate_report(
                     stats=results["stats"],
                     compare_pairs=compare_pairs,
                     duplicates_a_count=len(duplicates_a),
                     duplicates_b_count=len(duplicates_b),
                     fuzzy_count=len(fuzzy_matches),
+                    file_a_name=Path(self.file_a_path).name if self.file_a_path else "",
+                    file_b_name=Path(self.file_b_path).name if self.file_b_path else "",
+                    tolerance=tolerance,
                 )
+
+                # 5. 导出工作簿
+                self.after(0, self._update_status, "📦 正在构建导出文件…")
+                self.after(0, self.progress_bar.set, 0.9)
                 workbook = build_export_workbook(results, duplicates_a, duplicates_b, fuzzy_matches, report_text)
+
                 bundle = {
                     "results": results,
                     "duplicates_a": duplicates_a,
@@ -436,8 +563,11 @@ class ExcelReconcileApp(ctk.CTk):
                     "report_text": report_text,
                     "workbook": workbook,
                 }
+                self.after(0, self.progress_bar.set, 1.0)
                 self.after(0, lambda: self._on_reconcile_done(bundle))
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 self.after(0, lambda: self._on_reconcile_error(str(e)))
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -445,13 +575,18 @@ class ExcelReconcileApp(ctk.CTk):
     def _on_reconcile_done(self, bundle: dict) -> None:
         self.result_bundle = bundle
         self.run_btn.configure(state="normal")
-        self.status_label.configure(text="核对完成 ✓")
+        self.progress_bar.pack_forget()
+        self._update_status("✅ 核对完成")
         self._show_results()
 
     def _on_reconcile_error(self, msg: str) -> None:
         self.run_btn.configure(state="normal")
-        self.status_label.configure(text="")
+        self.progress_bar.pack_forget()
+        self._update_status("")
         messagebox.showerror("核对失败", msg)
+
+    def _update_status(self, text: str) -> None:
+        self.status_label.configure(text=text)
 
     # -----------------------------------------------------------------------
     # Display results
@@ -465,7 +600,6 @@ class ExcelReconcileApp(ctk.CTk):
         results = bundle["results"]
         stats = results["stats"]
 
-        # show result frame
         self.result_frame.pack(fill="both", expand=True, padx=4, pady=4)
 
         # metrics
@@ -475,14 +609,15 @@ class ExcelReconcileApp(ctk.CTk):
         labels = [
             ("A 表记录数", stats["left_rows"]),
             ("B 表记录数", stats["right_rows"]),
-            ("完全匹配", stats["exact_match_rows"]),
+            ("匹配率", stats.get("match_rate", "-")),
+            ("完全一致", f"{stats['exact_match_rows']}（{stats.get('exact_rate', '-')}）"),
             ("字段不一致", stats["mismatch_rows"]),
             ("模糊候选", len(bundle["fuzzy_matches"])),
         ]
         for i, (lbl, val) in enumerate(labels):
             self.metric_labels.append(_metric_card(self.metrics_frame, lbl, val, 0, i))
 
-        # tab data
+        # tab data with pagination
         tab_data = {
             "匹配结果": results["matched_records"],
             "完全匹配": results["exact_matches"],
@@ -492,12 +627,13 @@ class ExcelReconcileApp(ctk.CTk):
             "模糊匹配": bundle["fuzzy_matches"],
         }
         for name, df in tab_data.items():
-            if name in self.result_trees:
-                populate_treeview(self.result_trees[name], df)
+            self._page_dfs[name] = df if isinstance(df, pd.DataFrame) else pd.DataFrame()
+            self._page_states[name] = 0
+            self._refresh_paged_tree(name)
 
         # duplicates
-        populate_treeview(self.dup_tree_a, bundle["duplicates_a"])
-        populate_treeview(self.dup_tree_b, bundle["duplicates_b"])
+        _populate_treeview_page(self.dup_tree_a, bundle["duplicates_a"], 0)
+        _populate_treeview_page(self.dup_tree_b, bundle["duplicates_b"], 0)
 
         # report
         self.report_text.delete("1.0", "end")
@@ -511,12 +647,13 @@ class ExcelReconcileApp(ctk.CTk):
 
     def _export_workbook(self) -> None:
         if not self.result_bundle:
+            messagebox.showinfo("提示", "请先执行核对。")
             return
         path = filedialog.asksaveasfilename(
             title="保存核对结果",
             defaultextension=".xlsx",
             filetypes=[("Excel 工作簿", "*.xlsx")],
-            initialfile="excel_reconcile_result.xlsx",
+            initialfile="核对结果.xlsx",
         )
         if path:
             with open(path, "wb") as f:
