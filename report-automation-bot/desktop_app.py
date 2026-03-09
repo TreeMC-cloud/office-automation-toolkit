@@ -1,26 +1,28 @@
-"""
-自动报表机器人 - CustomTkinter 桌面版
-"""
+"""自动报表机器人 - CustomTkinter 桌面版 — 全面优化"""
 from __future__ import annotations
 
 import base64
 import io
 import sys
 import threading
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, ttk, messagebox
 
 import customtkinter as ctk
 import pandas as pd
-from PIL import Image, ImageTk
+from PIL import Image
 
 PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from services.file_ingestion import load_uploaded_files
-from services.cleaner import coerce_dataframe, detect_numeric_columns
-from services.metrics import compute_overview, aggregate_by_period, aggregate_by_dimension
-from services.chart_builder import build_bar_chart_base64, build_line_chart_base64
+from services.cleaner import coerce_dataframe, detect_numeric_columns, compute_data_quality
+from services.metrics import (
+    compute_overview, aggregate_by_period, aggregate_by_dimension,
+    detect_trend, AGG_FUNCS,
+)
+from services.chart_builder import build_bar_chart_base64, build_line_chart_base64, build_pie_chart_base64
 from services.exporter import build_report_workbook
 from services.report_renderer import render_html_report
 from services.notifier import build_notification_text, send_email, send_feishu
@@ -30,39 +32,35 @@ FREQ_OPTIONS = {"按天": "D", "按周": "W", "按月": "M"}
 
 
 class ReportApp(ctk.CTk):
-    """主窗口"""
-
     def __init__(self):
         super().__init__()
         self.title("📬 自动报表生成与通知机器人")
-        self.geometry("1200x800")
+        self.geometry("1200x850")
         self.minsize(1000, 700)
         ctk.set_appearance_mode("System")
         ctk.set_default_color_theme("blue")
 
-        # 状态
         self.raw_df: pd.DataFrame | None = None
         self.result: dict | None = None
-        self._chart_images: list = []  # 防止 GC 回收
+        self._chart_images: list = []
+
+        # 通知配置持久化
+        self._notify_config = {
+            "feishu_url": "", "smtp_server": "smtp.qq.com", "smtp_port": "465",
+            "sender": "", "password": "", "recipients": "",
+        }
 
         self._build_ui()
-
-    # ── UI 构建 ──────────────────────────────────────────────
 
     def _build_ui(self):
         container = ctk.CTkScrollableFrame(self)
         container.pack(fill="both", expand=True, padx=10, pady=10)
         self._container = container
 
-        # 1) 数据来源
         self._build_source_section(container)
-        # 2) 数据预览
         self._build_preview_section(container)
-        # 3) 配置区
         self._build_config_section(container)
-        # 4) 执行按钮
         self._build_action_section(container)
-        # 5) 结果展示区
         self._build_result_section(container)
 
     # ── 1. 数据来源 ─────────────────────────────────────────
@@ -70,7 +68,6 @@ class ReportApp(ctk.CTk):
     def _build_source_section(self, parent):
         frame = ctk.CTkFrame(parent)
         frame.pack(fill="x", pady=(0, 8))
-
         ctk.CTkLabel(frame, text="数据来源", font=ctk.CTkFont(size=15, weight="bold")).pack(anchor="w", padx=10, pady=(8, 4))
 
         row = ctk.CTkFrame(frame, fg_color="transparent")
@@ -128,14 +125,10 @@ class ReportApp(ctk.CTk):
         tree_frame = ctk.CTkFrame(frame, fg_color="transparent")
         tree_frame.pack(fill="x", padx=10, pady=(0, 8))
 
-        style = ttk.Style()
-        style.configure("Preview.Treeview", rowheight=24)
-
-        self._preview_tree = ttk.Treeview(tree_frame, show="headings", height=10, style="Preview.Treeview")
+        self._preview_tree = ttk.Treeview(tree_frame, show="headings", height=10)
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self._preview_tree.yview)
         hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=self._preview_tree.xview)
         self._preview_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-
         self._preview_tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="ew")
@@ -194,6 +187,10 @@ class ReportApp(ctk.CTk):
         # 右列
         right = ctk.CTkFrame(row, fg_color="transparent")
         right.grid(row=0, column=2, sticky="nsew", padx=(6, 0))
+        ctk.CTkLabel(right, text="聚合方式").pack(anchor="w")
+        self._agg_var = ctk.StringVar(value="求和")
+        self._agg_cb = ctk.CTkComboBox(right, variable=self._agg_var, values=list(AGG_FUNCS.keys()), state="readonly", width=200)
+        self._agg_cb.pack(fill="x", pady=(0, 6))
         ctk.CTkLabel(right, text="Top N").pack(anchor="w")
         self._topn_var = ctk.IntVar(value=5)
         self._topn_slider = ctk.CTkSlider(right, from_=3, to=10, number_of_steps=7, variable=self._topn_var)
@@ -223,93 +220,160 @@ class ReportApp(ctk.CTk):
     # ── 4. 执行区 ───────────────────────────────────────────
 
     def _build_action_section(self, parent):
-        self._gen_btn = ctk.CTkButton(parent, text="生成报表", height=40, font=ctk.CTkFont(size=14, weight="bold"), command=self._on_generate)
-        self._gen_btn.pack(fill="x", pady=(0, 8))
-        self._progress = ctk.CTkProgressBar(parent, mode="indeterminate")
+        self._gen_btn = ctk.CTkButton(parent, text="生成报表", height=40,
+                                       font=ctk.CTkFont(size=14, weight="bold"), command=self._on_generate)
+        self._gen_btn.pack(fill="x", pady=(0, 4))
+
+        self._status_label = ctk.CTkLabel(parent, text="", text_color="gray")
+        self._status_label.pack(pady=(0, 2))
+
+        self._progress = ctk.CTkProgressBar(parent)
+        self._progress.set(0)
 
     def _on_generate(self):
         if self.raw_df is None or self.raw_df.empty:
             messagebox.showwarning("提示", "请先加载数据")
             return
+
+        # 输入校验
+        date_col = self._date_col_var.get()
+        value_col = self._value_col_var.get()
+        if not date_col or not value_col:
+            messagebox.showwarning("提示", "请选择日期列和指标列")
+            return
+
+        # 线程安全：主线程提前取值
+        params = {
+            "date_col": date_col,
+            "value_col": value_col,
+            "dim_col": self._dim_col_var.get(),
+            "freq": FREQ_OPTIONS.get(self._freq_var.get(), "D"),
+            "agg": AGG_FUNCS.get(self._agg_var.get(), "sum"),
+            "top_n": self._topn_var.get(),
+        }
+
         self._gen_btn.configure(state="disabled", text="正在生成…")
         self._progress.pack(fill="x", pady=(0, 8))
-        self._progress.start()
-        threading.Thread(target=self._generate_worker, daemon=True).start()
+        self._progress.set(0)
+        self._update_status("⏳ 正在清洗数据…")
 
-    def _generate_worker(self):
+        threading.Thread(target=self._generate_worker, args=(params,), daemon=True).start()
+
+    def _generate_worker(self, params: dict):
         try:
             df = self.raw_df
-            date_col = self._date_col_var.get()
-            value_col = self._value_col_var.get()
-            dim_col = self._dim_col_var.get()
+            date_col = params["date_col"]
+            value_col = params["value_col"]
+            dim_col = params["dim_col"]
             dim_name = None if dim_col == "(不选择)" else dim_col
-            freq = FREQ_OPTIONS.get(self._freq_var.get(), "D")
-            top_n = self._topn_var.get()
+            freq = params["freq"]
+            agg = params["agg"]
+            top_n = params["top_n"]
 
+            # 1. 清洗
+            self.after(0, self._update_status, "🧹 清洗数据…")
+            self.after(0, self._progress.set, 0.1)
             cleaned = coerce_dataframe(df, date_column=date_col, numeric_columns=[value_col])
-            overview = compute_overview(cleaned, date_column=date_col, value_column=value_col)
-            trend_df = aggregate_by_period(cleaned, date_column=date_col, value_column=value_col, freq=freq)
-            dimension_df = aggregate_by_dimension(cleaned, dimension_column=dim_name, value_column=value_col, top_n=top_n)
+            quality = compute_data_quality(cleaned, date_col)
 
+            # 2. 指标计算
+            self.after(0, self._update_status, "📊 计算指标…")
+            self.after(0, self._progress.set, 0.25)
+            overview = compute_overview(cleaned, date_column=date_col, value_column=value_col)
+            trend_df = aggregate_by_period(cleaned, date_column=date_col, value_column=value_col, freq=freq, agg=agg)
+            dimension_df = aggregate_by_dimension(cleaned, dimension_column=dim_name, value_column=value_col, top_n=top_n, agg=agg)
+            trend_info = detect_trend(trend_df, value_col)
+
+            # 3. 摘要
+            self.after(0, self._update_status, "💡 生成摘要…")
+            self.after(0, self._progress.set, 0.4)
             summary_text = generate_summary(
                 overview=overview, trend_df=trend_df, dimension_df=dimension_df,
                 value_label=value_col, dimension_label=dim_name or "维度",
+                trend_info=trend_info, data_quality=quality,
             )
 
-            trend_chart = build_line_chart_base64(trend_df, x_column="period", y_column=value_col, title=f"{value_col} 趋势")
-            dimension_chart = build_bar_chart_base64(dimension_df, x_column=dim_name or "dimension", y_column=value_col, title=f"{value_col} Top 分布") if not dimension_df.empty else ""
+            # 4. 图表
+            self.after(0, self._update_status, "📈 生成图表…")
+            self.after(0, self._progress.set, 0.55)
+            trend_chart = build_line_chart_base64(
+                trend_df, x_column="period", y_column=value_col,
+                title=f"{value_col} 趋势", change_column="环比变化率",
+            )
+            dimension_chart = build_bar_chart_base64(
+                dimension_df, x_column=dim_name or "dimension", y_column=value_col,
+                title=f"{value_col} Top 分布",
+            ) if not dimension_df.empty else ""
+            pie_chart = build_pie_chart_base64(
+                dimension_df, label_column=dim_name or "dimension", value_column=value_col,
+                title=f"{value_col} 占比分布",
+            ) if not dimension_df.empty else ""
 
+            # 5. HTML 报告
+            self.after(0, self._update_status, "📝 渲染报告…")
+            self.after(0, self._progress.set, 0.7)
             template_path = PROJECT_ROOT / "templates" / "report.html"
             html_report = render_html_report(
                 template_path=template_path,
                 context={
                     "title": f"{value_col} 自动分析报告",
+                    "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "overview": overview,
+                    "data_quality": quality,
                     "summary_text": summary_text,
                     "trend_records": trend_df.to_dict(orient="records"),
                     "dimension_records": dimension_df.to_dict(orient="records"),
                     "preview_records": cleaned.head(10).to_dict(orient="records"),
                     "trend_chart": trend_chart,
                     "dimension_chart": dimension_chart,
+                    "pie_chart": pie_chart,
                     "value_label": value_col,
                     "dimension_label": dim_name or "维度",
                 },
             )
-            workbook = build_report_workbook(cleaned, overview, trend_df, dimension_df, summary_text)
+
+            # 6. Excel
+            self.after(0, self._update_status, "📦 构建 Excel…")
+            self.after(0, self._progress.set, 0.85)
+            workbook = build_report_workbook(
+                cleaned, overview, trend_df, dimension_df, summary_text,
+                trend_chart_b64=trend_chart, dimension_chart_b64=dimension_chart,
+            )
 
             self.result = {
-                "overview": overview,
-                "trend_df": trend_df,
-                "dimension_df": dimension_df,
-                "dimension_name": dim_name,
-                "value_col": value_col,
-                "summary_text": summary_text,
-                "html_report": html_report,
-                "workbook": workbook,
-                "trend_chart": trend_chart,
-                "dimension_chart": dimension_chart,
+                "overview": overview, "trend_df": trend_df, "dimension_df": dimension_df,
+                "dimension_name": dim_name, "value_col": value_col,
+                "summary_text": summary_text, "html_report": html_report,
+                "workbook": workbook, "trend_chart": trend_chart,
+                "dimension_chart": dimension_chart, "pie_chart": pie_chart,
+                "trend_info": trend_info, "data_quality": quality,
             }
+            self.after(0, self._progress.set, 1.0)
             self.after(0, self._on_generate_done)
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self.after(0, lambda: self._on_generate_error(str(e)))
 
     def _on_generate_done(self):
-        self._progress.stop()
         self._progress.pack_forget()
         self._gen_btn.configure(state="normal", text="生成报表")
+        self._update_status("✅ 报表生成完成")
         self._show_results()
 
     def _on_generate_error(self, msg):
-        self._progress.stop()
         self._progress.pack_forget()
         self._gen_btn.configure(state="normal", text="生成报表")
+        self._update_status("")
         messagebox.showerror("生成失败", msg)
+
+    def _update_status(self, text: str):
+        self._status_label.configure(text=text)
 
     # ── 5. 结果展示区 ───────────────────────────────────────
 
     def _build_result_section(self, parent):
         self._result_frame = ctk.CTkFrame(parent)
-        # 不 pack，等有结果再显示
 
     def _show_results(self):
         res = self.result
@@ -317,61 +381,76 @@ class ReportApp(ctk.CTk):
             return
         overview = res["overview"]
 
-        # 清空旧内容
         for w in self._result_frame.winfo_children():
             w.destroy()
         self._chart_images.clear()
         self._result_frame.pack(fill="both", expand=True, pady=(0, 8))
 
-        # ── 指标卡片 ──
+        # 导出按钮（顶部）
+        export_row = ctk.CTkFrame(self._result_frame, fg_color="transparent")
+        export_row.pack(fill="x", padx=10, pady=(8, 4))
+        ctk.CTkButton(export_row, text="📥 下载 HTML 报告", command=lambda: self._save_html(res)).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(export_row, text="📥 下载 Excel 报表", command=lambda: self._save_excel(res)).pack(side="left")
+
+        # 指标卡片
         cards = ctk.CTkFrame(self._result_frame, fg_color="transparent")
-        cards.pack(fill="x", padx=10, pady=(8, 4))
-        cards.columnconfigure((0, 1, 2, 3), weight=1)
+        cards.pack(fill="x", padx=10, pady=(4, 4))
         metrics = [
-            ("总记录数", overview["total_records"]),
-            ("总指标值", overview["total_value"]),
-            ("均值", overview["average_value"]),
-            ("最新周期值", overview["latest_period_value"]),
+            ("总记录数", f"{overview['total_records']:,}"),
+            ("总指标值", f"{overview['total_value']:,.2f}"),
+            ("均值", f"{overview['average_value']:,.2f}"),
+            ("中位数", f"{overview.get('median_value', 0):,.2f}"),
+            ("最大值", f"{overview.get('max_value', 0):,.2f}"),
+            ("最小值", f"{overview.get('min_value', 0):,.2f}"),
+            ("标准差", f"{overview.get('std_value', 0):,.2f}"),
+            ("最新周期值", f"{overview['latest_period_value']:,.2f}"),
         ]
+        for i in range(len(metrics)):
+            cards.columnconfigure(i, weight=1)
         for i, (label, value) in enumerate(metrics):
             card = ctk.CTkFrame(cards)
-            card.grid(row=0, column=i, sticky="nsew", padx=4, pady=4)
-            ctk.CTkLabel(card, text=label, text_color="gray", font=ctk.CTkFont(size=12)).pack(padx=10, pady=(8, 0))
-            ctk.CTkLabel(card, text=str(value), font=ctk.CTkFont(size=20, weight="bold")).pack(padx=10, pady=(0, 8))
+            card.grid(row=0, column=i, sticky="nsew", padx=3, pady=4)
+            ctk.CTkLabel(card, text=label, text_color="gray", font=ctk.CTkFont(size=11)).pack(padx=6, pady=(6, 0))
+            ctk.CTkLabel(card, text=value, font=ctk.CTkFont(size=16, weight="bold")).pack(padx=6, pady=(0, 6))
 
-        # ── 标签页 ──
+        # 环比变化率
+        trend_info = res.get("trend_info", {})
+        direction = trend_info.get("direction", "")
+        if direction and direction != "数据不足":
+            ctk.CTkLabel(self._result_frame, text=f"📈 趋势：{direction}",
+                         font=ctk.CTkFont(size=13), text_color="#2563eb").pack(anchor="w", padx=14, pady=(4, 0))
+
+        # 标签页
         tabview = ctk.CTkTabview(self._result_frame)
         tabview.pack(fill="both", expand=True, padx=10, pady=(4, 8))
 
         tab1 = tabview.add("趋势与维度")
-        tab2 = tabview.add("摘要与导出")
+        tab2 = tabview.add("摘要")
         tab3 = tabview.add("通知发送")
 
         self._fill_tab_trend(tab1, res)
         self._fill_tab_summary(tab2, res)
         self._fill_tab_notify(tab3, res)
 
-    # ── Tab1: 趋势与维度 ────────────────────────────────────
-
     def _fill_tab_trend(self, parent, res):
         scroll = ctk.CTkScrollableFrame(parent)
         scroll.pack(fill="both", expand=True)
 
-        # 趋势图
         if res["trend_chart"]:
-            ctk.CTkLabel(scroll, text="趋势图", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(4, 2))
+            ctk.CTkLabel(scroll, text="趋势图（含环比变化率）", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(4, 2))
             self._place_chart_image(scroll, res["trend_chart"])
 
-        # 维度图
-        if res["dimension_chart"]:
+        if res.get("dimension_chart"):
             ctk.CTkLabel(scroll, text="维度 Top N 分布", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(8, 2))
             self._place_chart_image(scroll, res["dimension_chart"])
 
-        # 趋势表格
+        if res.get("pie_chart"):
+            ctk.CTkLabel(scroll, text="维度占比饼图", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(8, 2))
+            self._place_chart_image(scroll, res["pie_chart"])
+
         ctk.CTkLabel(scroll, text="趋势数据", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(8, 2))
         self._build_df_treeview(scroll, res["trend_df"])
 
-        # 维度表格
         if not res["dimension_df"].empty:
             ctk.CTkLabel(scroll, text="维度数据", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(8, 2))
             self._build_df_treeview(scroll, res["dimension_df"])
@@ -379,15 +458,13 @@ class ReportApp(ctk.CTk):
     def _place_chart_image(self, parent, b64_str: str):
         raw = base64.b64decode(b64_str)
         pil_img = Image.open(io.BytesIO(raw))
-        # 限制最大宽度
         max_w = 900
         if pil_img.width > max_w:
             ratio = max_w / pil_img.width
             pil_img = pil_img.resize((max_w, int(pil_img.height * ratio)), Image.LANCZOS)
         ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(pil_img.width, pil_img.height))
         self._chart_images.append(ctk_img)
-        lbl = ctk.CTkLabel(parent, image=ctk_img, text="")
-        lbl.pack(pady=4)
+        ctk.CTkLabel(parent, image=ctk_img, text="").pack(pady=4)
 
     def _build_df_treeview(self, parent, df: pd.DataFrame):
         frame = ctk.CTkFrame(parent, fg_color="transparent")
@@ -404,35 +481,12 @@ class ReportApp(ctk.CTk):
         tree.pack(fill="x")
         hsb.pack(fill="x")
 
-    # ── Tab2: 摘要与导出 ────────────────────────────────────
-
     def _fill_tab_summary(self, parent, res):
-        ctk.CTkLabel(parent, text="AI 摘要", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=8, pady=(8, 2))
-        txt = ctk.CTkTextbox(parent, height=200)
-        txt.pack(fill="x", padx=8, pady=(0, 8))
+        ctk.CTkLabel(parent, text="智能摘要", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=8, pady=(8, 2))
+        txt = ctk.CTkTextbox(parent, height=300)
+        txt.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         txt.insert("0.0", res["summary_text"])
         txt.configure(state="disabled")
-
-        btn_row = ctk.CTkFrame(parent, fg_color="transparent")
-        btn_row.pack(fill="x", padx=8, pady=(0, 8))
-        ctk.CTkButton(btn_row, text="下载 HTML 报告", command=lambda: self._save_html(res)).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(btn_row, text="下载 Excel 报表工作簿", command=lambda: self._save_excel(res)).pack(side="left")
-
-    def _save_html(self, res):
-        path = filedialog.asksaveasfilename(defaultextension=".html", filetypes=[("HTML", "*.html")])
-        if not path:
-            return
-        Path(path).write_text(res["html_report"], encoding="utf-8")
-        messagebox.showinfo("完成", f"HTML 报告已保存至\n{path}")
-
-    def _save_excel(self, res):
-        path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")])
-        if not path:
-            return
-        Path(path).write_bytes(res["workbook"])
-        messagebox.showinfo("完成", f"Excel 工作簿已保存至\n{path}")
-
-    # ── Tab3: 通知发送 ──────────────────────────────────────
 
     def _fill_tab_notify(self, parent, res):
         scroll = ctk.CTkScrollableFrame(parent)
@@ -440,12 +494,12 @@ class ReportApp(ctk.CTk):
 
         notification_text = build_notification_text(res["summary_text"], res["overview"])
 
-        # 飞书
         ctk.CTkLabel(scroll, text="飞书 Webhook（可选）", font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=8, pady=(8, 2))
         self._feishu_entry = ctk.CTkEntry(scroll, placeholder_text="https://open.feishu.cn/open-apis/bot/v2/hook/...")
         self._feishu_entry.pack(fill="x", padx=8, pady=(0, 8))
+        if self._notify_config["feishu_url"]:
+            self._feishu_entry.insert(0, self._notify_config["feishu_url"])
 
-        # 邮件
         ctk.CTkLabel(scroll, text="邮件配置（可选）", font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=8, pady=(4, 2))
         mail_frame = ctk.CTkFrame(scroll, fg_color="transparent")
         mail_frame.pack(fill="x", padx=8, pady=(0, 4))
@@ -453,16 +507,18 @@ class ReportApp(ctk.CTk):
 
         ctk.CTkLabel(mail_frame, text="SMTP 服务器").grid(row=0, column=0, sticky="w")
         self._smtp_server = ctk.CTkEntry(mail_frame)
-        self._smtp_server.insert(0, "smtp.qq.com")
+        self._smtp_server.insert(0, self._notify_config["smtp_server"])
         self._smtp_server.grid(row=1, column=0, sticky="ew", padx=(0, 4), pady=(0, 4))
 
         ctk.CTkLabel(mail_frame, text="SMTP 端口").grid(row=0, column=1, sticky="w")
         self._smtp_port = ctk.CTkEntry(mail_frame)
-        self._smtp_port.insert(0, "465")
+        self._smtp_port.insert(0, self._notify_config["smtp_port"])
         self._smtp_port.grid(row=1, column=1, sticky="ew", padx=(4, 0), pady=(0, 4))
 
         ctk.CTkLabel(mail_frame, text="发件邮箱").grid(row=2, column=0, sticky="w")
         self._sender = ctk.CTkEntry(mail_frame)
+        if self._notify_config["sender"]:
+            self._sender.insert(0, self._notify_config["sender"])
         self._sender.grid(row=3, column=0, sticky="ew", padx=(0, 4), pady=(0, 4))
 
         ctk.CTkLabel(mail_frame, text="邮箱授权码 / 密码").grid(row=2, column=1, sticky="w")
@@ -471,11 +527,12 @@ class ReportApp(ctk.CTk):
 
         ctk.CTkLabel(mail_frame, text="收件人（多个用逗号分隔）").grid(row=4, column=0, columnspan=2, sticky="w")
         self._recipients = ctk.CTkEntry(mail_frame)
+        if self._notify_config["recipients"]:
+            self._recipients.insert(0, self._notify_config["recipients"])
         self._recipients.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(0, 4))
 
         ctk.CTkButton(scroll, text="发送通知", command=lambda: self._send_notify(res)).pack(fill="x", padx=8, pady=(4, 8))
 
-        # 通知预览
         ctk.CTkLabel(scroll, text="通知预览", font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=8, pady=(4, 2))
         preview = ctk.CTkTextbox(scroll, height=180)
         preview.pack(fill="x", padx=8, pady=(0, 8))
@@ -483,40 +540,62 @@ class ReportApp(ctk.CTk):
         preview.configure(state="disabled")
 
     def _send_notify(self, res):
+        # 保存配置
+        self._notify_config["feishu_url"] = self._feishu_entry.get().strip()
+        self._notify_config["smtp_server"] = self._smtp_server.get().strip()
+        self._notify_config["smtp_port"] = self._smtp_port.get().strip()
+        self._notify_config["sender"] = self._sender.get().strip()
+        self._notify_config["recipients"] = self._recipients.get().strip()
+
         notification_text = build_notification_text(res["summary_text"], res["overview"])
         messages: list[str] = []
-        webhook = self._feishu_entry.get().strip()
-        sender = self._sender.get().strip()
+        webhook = self._notify_config["feishu_url"]
+        sender = self._notify_config["sender"]
         pwd = self._mail_pwd.get().strip()
-        recip = self._recipients.get().strip()
+        recip = self._notify_config["recipients"]
 
         def _worker():
             try:
                 if webhook:
-                    resp = send_feishu(webhook, notification_text)
+                    resp = send_feishu(webhook, notification_text, overview=res["overview"])
                     messages.append(f"飞书发送完成：{resp}")
                 if sender and pwd and recip:
                     send_email(
-                        smtp_server=self._smtp_server.get().strip(),
-                        smtp_port=int(self._smtp_port.get().strip()),
-                        sender=sender,
-                        password=pwd,
-                        recipients=[r.strip() for r in recip.split(",") if r.strip()],
-                        subject="自动报表通知",
+                        smtp_server=self._notify_config["smtp_server"],
+                        smtp_port=int(self._notify_config["smtp_port"]),
+                        sender=sender, password=pwd,
+                        recipients=[r.strip() for r in recip.split(",")],
+                        subject=f"自动报表 - {res['value_col']}",
                         html_body=res["html_report"],
+                        attachment=res["workbook"],
+                        attachment_name=f"报表_{res['value_col']}.xlsx",
                     )
-                    messages.append("邮件发送完成")
-                self.after(0, _done)
+                    messages.append("邮件发送完成（含 Excel 附件）")
+                if not messages:
+                    messages.append("未配置任何通知渠道")
+                self.after(0, lambda: messagebox.showinfo("通知结果", "\n".join(messages)))
             except Exception as e:
                 self.after(0, lambda: messagebox.showerror("发送失败", str(e)))
 
-        def _done():
-            if messages:
-                messagebox.showinfo("完成", "；".join(messages))
-            else:
-                messagebox.showwarning("提示", "未填写通知配置，本次仅展示通知预览。")
-
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _save_html(self, res):
+        path = filedialog.asksaveasfilename(
+            defaultextension=".html", filetypes=[("HTML", "*.html")],
+            initialfile=f"报告_{res['value_col']}.html",
+        )
+        if path:
+            Path(path).write_text(res["html_report"], encoding="utf-8")
+            messagebox.showinfo("完成", f"HTML 报告已保存至\n{path}")
+
+    def _save_excel(self, res):
+        path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")],
+            initialfile=f"报表_{res['value_col']}.xlsx",
+        )
+        if path:
+            Path(path).write_bytes(res["workbook"])
+            messagebox.showinfo("完成", f"Excel 工作簿已保存至\n{path}")
 
 
 if __name__ == "__main__":

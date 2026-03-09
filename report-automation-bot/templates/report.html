@@ -4,58 +4,84 @@
   <meta charset="UTF-8" />
   <title>{{ title }}</title>
   <style>
-    body { font-family: Arial, Helvetica, sans-serif; margin: 32px; color: #1f2937; }
-    h1, h2 { color: #111827; }
-    .grid { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 16px; margin-bottom: 24px; }
-    .card { background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; font-size: 14px; }
-    th { background: #f3f4f6; }
-    img { max-width: 100%; border: 1px solid #e5e7eb; border-radius: 12px; margin-top: 12px; }
-    pre { white-space: pre-wrap; background: #0f172a; color: #e2e8f0; padding: 16px; border-radius: 12px; }
+    body { font-family: "Microsoft YaHei", Arial, sans-serif; margin: 32px; color: #1f2937; background: #fafbfc; }
+    h1 { color: #111827; border-bottom: 3px solid #2563eb; padding-bottom: 8px; }
+    h2 { color: #1e40af; margin-top: 28px; }
+    .meta { color: #6b7280; font-size: 13px; margin-bottom: 20px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 24px; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px; text-align: center; }
+    .card strong { display: block; font-size: 12px; color: #6b7280; margin-bottom: 4px; }
+    .card .val { font-size: 22px; font-weight: bold; color: #111827; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+    th { background: #2563eb; color: #fff; padding: 8px 10px; text-align: left; }
+    td { border: 1px solid #e5e7eb; padding: 7px 10px; }
+    tr:nth-child(even) td { background: #f8fafc; }
+    img { max-width: 100%; border: 1px solid #e5e7eb; border-radius: 10px; margin: 12px 0; }
+    pre { white-space: pre-wrap; background: #0f172a; color: #e2e8f0; padding: 16px; border-radius: 10px; font-size: 13px; line-height: 1.6; }
+    .quality { background: #fffbeb; border: 1px solid #fbbf24; border-radius: 8px; padding: 12px; margin: 12px 0; }
+    .footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid #e5e7eb; color: #9ca3af; font-size: 12px; text-align: center; }
   </style>
 </head>
 <body>
   <h1>{{ title }}</h1>
+  <div class="meta">生成时间：{{ generated_at }} | 数据来源：{{ data_source | default("用户上传") }}</div>
+
   <div class="grid">
-    <div class="card"><strong>总记录数</strong><div>{{ overview.total_records }}</div></div>
-    <div class="card"><strong>总指标值</strong><div>{{ overview.total_value }}</div></div>
-    <div class="card"><strong>平均值</strong><div>{{ overview.average_value }}</div></div>
-    <div class="card"><strong>最新周期值</strong><div>{{ overview.latest_period_value }}</div></div>
+    <div class="card"><strong>总记录数</strong><div class="val">{{ overview.total_records | comma(0) }}</div></div>
+    <div class="card"><strong>总指标值</strong><div class="val">{{ overview.total_value | comma }}</div></div>
+    <div class="card"><strong>均值</strong><div class="val">{{ overview.average_value | comma }}</div></div>
+    <div class="card"><strong>中位数</strong><div class="val">{{ overview.get('median_value', 0) | comma }}</div></div>
+    <div class="card"><strong>最大值</strong><div class="val">{{ overview.get('max_value', 0) | comma }}</div></div>
+    <div class="card"><strong>最小值</strong><div class="val">{{ overview.get('min_value', 0) | comma }}</div></div>
+    <div class="card"><strong>标准差</strong><div class="val">{{ overview.get('std_value', 0) | comma }}</div></div>
+    <div class="card"><strong>最新周期值</strong><div class="val">{{ overview.latest_period_value | comma }}</div></div>
   </div>
+
+  {% if data_quality %}
+  <div class="quality">
+    <strong>📋 数据质量</strong>：
+    总行数 {{ data_quality.total_rows | comma(0) }}，
+    重复率 {{ data_quality.duplicate_rate }}，
+    缺失率 {{ data_quality.missing_rate }}
+    {% if data_quality.date_invalid_rows > 0 %}，{{ data_quality.date_invalid_rows }} 行日期无法解析{% endif %}
+  </div>
+  {% endif %}
 
   <h2>自动摘要</h2>
   <pre>{{ summary_text }}</pre>
 
   <h2>{{ value_label }} 趋势</h2>
   {% if trend_chart %}
-  <img src="data:image/png;base64,{{ trend_chart }}" alt="trend-chart" />
+  <img src="data:image/png;base64,{{ trend_chart }}" alt="趋势图" />
   {% endif %}
   <table>
-    <thead><tr><th>周期</th><th>{{ value_label }}</th></tr></thead>
+    <thead><tr><th>周期</th><th>{{ value_label }}</th><th>环比变化率</th></tr></thead>
     <tbody>
-      {% for record in trend_records %}
-      <tr><td>{{ record.period }}</td><td>{{ record[value_label] }}</td></tr>
+      {% for r in trend_records %}
+      <tr>
+        <td>{{ r.period }}</td>
+        <td>{{ r[value_label] | comma }}</td>
+        <td>{% if r.get('环比变化率') is not none %}{{ r['环比变化率'] | pct }}{% else %}-{% endif %}</td>
+      </tr>
       {% endfor %}
     </tbody>
   </table>
 
-  <h2>{{ dimension_label }} Top</h2>
+  <h2>{{ dimension_label }} Top 分布</h2>
   {% if dimension_chart %}
-  <img src="data:image/png;base64,{{ dimension_chart }}" alt="dimension-chart" />
+  <img src="data:image/png;base64,{{ dimension_chart }}" alt="维度分布图" />
+  {% endif %}
+  {% if pie_chart %}
+  <img src="data:image/png;base64,{{ pie_chart }}" alt="占比饼图" />
   {% endif %}
   <table>
-    <thead>
-      <tr>
-        <th>{{ dimension_label }}</th>
-        <th>{{ value_label }}</th>
-      </tr>
-    </thead>
+    <thead><tr><th>{{ dimension_label }}</th><th>{{ value_label }}</th><th>占比</th></tr></thead>
     <tbody>
-      {% for record in dimension_records %}
+      {% for r in dimension_records %}
       <tr>
-        <td>{{ record[dimension_label] if record[dimension_label] is defined else record.values()|list|first }}</td>
-        <td>{{ record[value_label] }}</td>
+        <td>{{ r[dimension_label] if r[dimension_label] is defined else r.values()|list|first }}</td>
+        <td>{{ r[value_label] | comma }}</td>
+        <td>{{ r.get('占比', '-') }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -63,24 +89,14 @@
 
   <h2>原始数据预览</h2>
   <table>
-    <thead>
-      <tr>
-        {% if preview_records %}
-          {% for key in preview_records[0].keys() %}
-          <th>{{ key }}</th>
-          {% endfor %}
-        {% endif %}
-      </tr>
-    </thead>
+    <thead><tr>{% if preview_records %}{% for key in preview_records[0].keys() %}<th>{{ key }}</th>{% endfor %}{% endif %}</tr></thead>
     <tbody>
-      {% for record in preview_records %}
-      <tr>
-        {% for value in record.values() %}
-        <td>{{ value }}</td>
-        {% endfor %}
-      </tr>
+      {% for r in preview_records %}
+      <tr>{% for v in r.values() %}<td>{{ v }}</td>{% endfor %}</tr>
       {% endfor %}
     </tbody>
   </table>
+
+  <div class="footer">自动报表生成机器人 | {{ generated_at }}</div>
 </body>
 </html>
