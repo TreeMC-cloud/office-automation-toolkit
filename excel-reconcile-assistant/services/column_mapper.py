@@ -1,71 +1,131 @@
-from __future__ import annotations
+"""列映射推荐 — 语义组匹配 + 字符串相似度，支持中英文列名"""
 
-from difflib import SequenceMatcher
+from __future__ import annotations
 
 from utils.text_normalizer import normalize_column_name
 
-
-SEMANTIC_GROUPS = {
-    "customer_id": ["客户编号", "客户id", "客户代码", "企业编号", "编号", "编码"],
-    "company": ["客户名称", "公司名", "企业名称", "单位名称", "商户名称", "客户", "名称"],
-    "contact": ["联系人", "联系人姓名", "负责人", "对接人", "姓名"],
-    "phone": ["手机号", "电话", "联系电话", "联系方式", "手机"],
-    "amount": ["金额", "订单金额", "回款金额", "总额", "销售额", "应收金额"],
-    "city": ["城市", "地区", "所在城市", "省市", "区域"],
-    "date": ["日期", "时间", "创建时间", "下单时间", "发布时间"],
-}
+try:
+    from rapidfuzz import fuzz
+    _sim = lambda a, b: fuzz.token_sort_ratio(a, b)
+except ImportError:
+    from difflib import SequenceMatcher
+    _sim = lambda a, b: SequenceMatcher(None, a, b).ratio() * 100
 
 
-def _semantic_label(column_name: str) -> str | None:
-    normalized = normalize_column_name(column_name)
-    for label, aliases in SEMANTIC_GROUPS.items():
-        for alias in aliases:
-            if normalize_column_name(alias) in normalized or normalized in normalize_column_name(alias):
-                return label
-    return None
+# 语义组：同一组内的列名被认为是同义词
+SEMANTIC_GROUPS: list[set[str]] = [
+    # 标识类
+    {"编号", "编码", "代码", "序号", "id", "code", "no", "number", "num", "序列号", "工号"},
+    # 名称类
+    {"名称", "姓名", "公司名", "企业名", "客户名", "name", "companyname", "customername", "fullname"},
+    # 金额类
+    {"金额", "总额", "价格", "单价", "费用", "成本", "amount", "price", "cost", "total", "sum", "fee"},
+    # 数量类
+    {"数量", "件数", "个数", "qty", "quantity", "count"},
+    # 日期类
+    {"日期", "时间", "创建时间", "更新时间", "date", "time", "datetime", "createdat", "updatedat", "timestamp"},
+    # 地址类
+    {"地址", "地区", "城市", "省份", "address", "city", "region", "province", "location", "area"},
+    # 联系方式
+    {"电话", "手机", "联系方式", "phone", "mobile", "tel", "telephone", "contact"},
+    # 邮箱
+    {"邮箱", "邮件", "email", "mail"},
+    # 状态类
+    {"状态", "阶段", "status", "state", "stage", "phase"},
+    # 备注类
+    {"备注", "说明", "描述", "remark", "note", "description", "comment", "memo"},
+    # 类型类
+    {"类型", "分类", "类别", "type", "category", "class", "kind"},
+]
 
 
-def _score_pair(left: str, right: str) -> tuple[int, str]:
-    left_norm = normalize_column_name(left)
-    right_norm = normalize_column_name(right)
-    if left_norm == right_norm:
-        return 100, "列名完全一致"
-    left_label = _semantic_label(left)
-    right_label = _semantic_label(right)
-    if left_label and right_label and left_label == right_label:
-        return 94, f"语义组一致：{left_label}"
-    similarity = int(SequenceMatcher(None, left_norm, right_norm).ratio() * 100)
-    return similarity, "字符串相似度"
+def recommend_key_columns(cols_a: list[str], cols_b: list[str]) -> list[tuple[str, str, int]]:
+    """推荐主键列对，返回 [(col_a, col_b, score), ...] 按分数降序"""
+    results = []
+    for ca in cols_a:
+        na = normalize_column_name(ca)
+        for cb in cols_b:
+            nb = normalize_column_name(cb)
+            score = _column_similarity(na, nb)
+            if score >= 50:
+                results.append((ca, cb, score))
+    results.sort(key=lambda x: x[2], reverse=True)
+    return results
 
 
-def recommend_key_columns(columns_a: list[str], columns_b: list[str], limit: int = 3) -> list[tuple[str, str, int, str]]:
-    candidates: list[tuple[str, str, int, str]] = []
-    for left in columns_a:
-        for right in columns_b:
-            score, reason = _score_pair(left, right)
-            if score >= 65:
-                candidates.append((left, right, score, reason))
-    candidates.sort(key=lambda item: item[2], reverse=True)
-    return candidates[:limit]
+def recommend_field_mapping(
+    cols_a: list[str], cols_b: list[str],
+) -> list[tuple[str, str, int, str]]:
+    """
+    推荐字段映射，返回 [(col_a, col_b, score, method), ...]
 
+    使用贪心 + 双向验证：A→B 最佳匹配必须也是 B→A 的最佳匹配。
+    """
+    results = []
+    used_b: set[str] = set()
 
-def recommend_field_mapping(columns_a: list[str], columns_b: list[str], limit: int = 6) -> list[tuple[str, str, int, str]]:
-    used_right: set[str] = set()
-    mappings: list[tuple[str, str, int, str]] = []
-    for left in columns_a:
-        best_right = None
-        best_score = -1
-        best_reason = ""
-        for right in columns_b:
-            if right in used_right:
-                continue
-            score, reason = _score_pair(left, right)
+    # 计算所有 A→B 的分数矩阵
+    score_matrix: dict[str, list[tuple[str, int, str]]] = {}
+    for ca in cols_a:
+        na = normalize_column_name(ca)
+        candidates = []
+        for cb in cols_b:
+            nb = normalize_column_name(cb)
+            score = _column_similarity(na, nb)
+            method = "语义" if _semantic_match(na, nb) else "相似度"
+            candidates.append((cb, score, method))
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        score_matrix[ca] = candidates
+
+    # 反向矩阵 B→A
+    reverse_best: dict[str, str] = {}
+    for cb in cols_b:
+        nb = normalize_column_name(cb)
+        best_a, best_score = "", 0
+        for ca in cols_a:
+            na = normalize_column_name(ca)
+            score = _column_similarity(na, nb)
             if score > best_score:
-                best_right = right
                 best_score = score
-                best_reason = reason
-        if best_right and best_score >= 55:
-            mappings.append((left, best_right, best_score, best_reason))
-            used_right.add(best_right)
-    mappings.sort(key=lambda item: item[2], reverse=True)
-    return mappings[:limit]
+                best_a = ca
+        if best_a:
+            reverse_best[cb] = best_a
+
+    # 贪心 + 双向验证
+    for ca in cols_a:
+        for cb, score, method in score_matrix[ca]:
+            if cb in used_b or score < 50:
+                continue
+            # 双向验证：B 的最佳匹配也是 A
+            if reverse_best.get(cb) == ca:
+                results.append((ca, cb, score, method))
+                used_b.add(cb)
+                break
+
+    results.sort(key=lambda x: x[2], reverse=True)
+    return results
+
+
+# ---------------------------------------------------------------------------
+# 内部函数
+# ---------------------------------------------------------------------------
+
+def _column_similarity(na: str, nb: str) -> int:
+    """计算两个标准化列名的相似度（0-100）"""
+    if na == nb:
+        return 100
+    if _semantic_match(na, nb):
+        return 95
+    # 子串包含（较长的包含较短的）
+    if len(na) >= 2 and len(nb) >= 2:
+        if na in nb or nb in na:
+            return 85
+    return int(_sim(na, nb))
+
+
+def _semantic_match(na: str, nb: str) -> bool:
+    """检查两个标准化列名是否属于同一语义组"""
+    for group in SEMANTIC_GROUPS:
+        if na in group and nb in group:
+            return True
+    return False
