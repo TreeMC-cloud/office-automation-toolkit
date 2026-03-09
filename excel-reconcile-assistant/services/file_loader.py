@@ -1,68 +1,71 @@
+"""文件加载 — 支持 Excel / CSV，自动编码检测，保留 NaN 语义"""
+
 from __future__ import annotations
 
-import io
 from pathlib import Path
-from typing import Any
+from typing import IO
 
 import pandas as pd
 
 
-SUPPORTED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
+def list_sheets(source) -> list[str]:
+    """返回 Excel 文件的 Sheet 列表；CSV 返回 ['Sheet1']"""
+    path = _resolve_path(source)
+    if path.suffix.lower() == ".csv":
+        return ["Sheet1"]
+    xls = pd.ExcelFile(path)
+    return xls.sheet_names
 
 
-def _detect_extension(source: Any) -> str:
-    name = getattr(source, "name", str(source))
-    suffix = Path(name).suffix.lower()
-    if suffix not in SUPPORTED_EXTENSIONS:
-        raise ValueError(f"暂不支持的文件类型：{suffix}")
-    return suffix
+def read_dataframe(source, sheet_name: str | None = None) -> pd.DataFrame:
+    """读取文件为 DataFrame，自动清洗但保留 NaN"""
+    path = _resolve_path(source)
+    ext = path.suffix.lower()
+
+    if ext == ".csv":
+        df = _read_csv(path)
+    elif ext in (".xlsx", ".xls"):
+        df = pd.read_excel(path, sheet_name=sheet_name or 0)
+    else:
+        raise ValueError(f"不支持的文件格式：{ext}")
+
+    return _clean_dataframe(df)
 
 
-def _read_bytes(source: Any) -> bytes:
-    if hasattr(source, "getvalue"):
-        return source.getvalue()
+# ---------------------------------------------------------------------------
+# 内部函数
+# ---------------------------------------------------------------------------
+
+def _resolve_path(source) -> Path:
+    """统一处理路径字符串、Path 对象、Streamlit UploadedFile"""
     if isinstance(source, (str, Path)):
-        return Path(source).read_bytes()
-    if hasattr(source, "read"):
-        position = source.tell() if hasattr(source, "tell") else None
-        data = source.read()
-        if position is not None and hasattr(source, "seek"):
-            source.seek(position)
-        return data if isinstance(data, bytes) else str(data).encode("utf-8")
-    raise ValueError("无法读取输入文件")
+        return Path(source)
+    # Streamlit UploadedFile 或类文件对象
+    if hasattr(source, "name"):
+        return Path(source.name)
+    raise TypeError(f"无法识别的文件来源类型：{type(source)}")
 
 
-def _clean_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
-    result = dataframe.copy()
-    result.columns = [str(column).strip() for column in result.columns]
-    result = result.dropna(how="all")
-    result = result.dropna(axis=1, how="all")
-    for column in result.columns:
-        if result[column].dtype == object:
-            result[column] = result[column].fillna("").astype(str).str.strip()
-    return result.reset_index(drop=True)
+def _read_csv(path: Path) -> pd.DataFrame:
+    """尝试多种编码读取 CSV"""
+    encodings = ["utf-8-sig", "utf-8", "gbk", "gb18030", "latin-1"]
+    for enc in encodings:
+        try:
+            return pd.read_csv(path, encoding=enc)
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    raise ValueError(f"无法识别文件编码：{path.name}")
 
 
-def list_sheets(source: Any) -> list[str]:
-    extension = _detect_extension(source)
-    if extension == ".csv":
-        return ["CSV"]
-    excel = pd.ExcelFile(io.BytesIO(_read_bytes(source)))
-    return excel.sheet_names
+def _clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """基础清洗：去空行/空列、strip 文本，但保留 NaN"""
+    # 去除全空行和全空列
+    df = df.dropna(how="all").dropna(axis=1, how="all")
 
+    # 文本列 strip（不 fillna，保留 NaN 语义）
+    for col in df.select_dtypes(include=["object"]).columns:
+        df[col] = df[col].map(lambda x: x.strip() if isinstance(x, str) else x)
 
-def read_dataframe(source: Any, sheet_name: str | None = None) -> pd.DataFrame:
-    extension = _detect_extension(source)
-    raw_bytes = _read_bytes(source)
-    if extension == ".csv":
-        encodings = ["utf-8-sig", "utf-8", "gbk", "gb18030"]
-        last_error: Exception | None = None
-        for encoding in encodings:
-            try:
-                dataframe = pd.read_csv(io.BytesIO(raw_bytes), encoding=encoding)
-                return _clean_dataframe(dataframe)
-            except Exception as exc:  # pragma: no cover - 兼容不同编码
-                last_error = exc
-        raise ValueError(f"CSV 读取失败：{last_error}")
-    dataframe = pd.read_excel(io.BytesIO(raw_bytes), sheet_name=sheet_name or 0)
-    return _clean_dataframe(dataframe)
+    # 重置索引
+    df = df.reset_index(drop=True)
+    return df
