@@ -42,12 +42,15 @@ def generate_summary(
 
         # 环比
         if len(trend_df) >= 2:
-            cur = float(trend_df.iloc[-1][value_label])
-            prev = float(trend_df.iloc[-2][value_label])
-            if prev != 0:
-                rate = (cur - prev) / prev * 100
-                arrow = "↑" if rate >= 0 else "↓"
-                lines.append(f"最近一期环比变化 {arrow} {abs(rate):.1f}%。")
+            try:
+                cur = float(trend_df.iloc[-1][value_label])
+                prev = float(trend_df.iloc[-2][value_label])
+                if prev != 0:
+                    rate = (cur - prev) / prev * 100
+                    arrow = "↑" if rate >= 0 else "↓"
+                    lines.append(f"最近一期环比变化 {arrow} {abs(rate):.1f}%。")
+            except (ValueError, TypeError, KeyError):
+                pass
 
         # 异常波动
         anomalies = trend_info.get("anomalies", [])
@@ -79,6 +82,18 @@ def generate_summary(
                     lines.append(f"   ⚡ 集中度较高：Top 1 占比超过 50%，建议关注单一依赖风险。")
             except ValueError:
                 pass
+
+        # CR3 集中度
+        if "占比" in dimension_df.columns and len(dimension_df) >= 3:
+            try:
+                cr3 = sum(float(str(dimension_df.iloc[i]["占比"]).replace("%", "").replace("-", "0")) for i in range(min(3, len(dimension_df))))
+                if cr3 > 80:
+                    lines.append(f"   ⚡ Top 3 集中度 {cr3:.1f}%，市场高度集中。")
+                elif cr3 > 60:
+                    lines.append(f"   📊 Top 3 集中度 {cr3:.1f}%，市场中度集中。")
+            except (ValueError, IndexError):
+                pass
+
         lines.append("")
 
     # 4. 数据质量

@@ -2,101 +2,355 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{{ title }}</title>
   <style>
-    body { font-family: "Microsoft YaHei", Arial, sans-serif; margin: 32px; color: #1f2937; background: #fafbfc; }
-    h1 { color: #111827; border-bottom: 3px solid #2563eb; padding-bottom: 8px; }
-    h2 { color: #1e40af; margin-top: 28px; }
-    .meta { color: #6b7280; font-size: 13px; margin-bottom: 20px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 24px; }
-    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px; text-align: center; }
-    .card strong { display: block; font-size: 12px; color: #6b7280; margin-bottom: 4px; }
-    .card .val { font-size: 22px; font-weight: bold; color: #111827; }
-    table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
-    th { background: #2563eb; color: #fff; padding: 8px 10px; text-align: left; }
-    td { border: 1px solid #e5e7eb; padding: 7px 10px; }
+    /* ===== 基础重置与全局 ===== */
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: "Microsoft YaHei", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+      margin: 0; padding: 0; color: #1f2937; background: #f0f2f5;
+      line-height: 1.6;
+    }
+
+    /* ===== 渐变标题栏 ===== */
+    .header-bar {
+      background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 50%, #3b82f6 100%);
+      color: #fff; padding: 32px 40px 24px; position: relative;
+    }
+    .header-bar h1 {
+      margin: 0 0 6px; font-size: 28px; font-weight: 700; letter-spacing: 0.5px;
+    }
+    .header-bar .meta {
+      font-size: 13px; color: rgba(255,255,255,0.78);
+    }
+
+    /* ===== 目录导航 ===== */
+    .nav-bar {
+      position: sticky; top: 0; z-index: 100;
+      background: #fff; border-bottom: 1px solid #e5e7eb;
+      padding: 0 40px; display: flex; gap: 4px; overflow-x: auto;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .nav-bar a {
+      display: inline-block; padding: 12px 18px; font-size: 14px;
+      color: #4b5563; text-decoration: none; white-space: nowrap;
+      border-bottom: 2px solid transparent; transition: all 0.2s;
+    }
+    .nav-bar a:hover, .nav-bar a:focus {
+      color: #2563eb; border-bottom-color: #2563eb; background: #eff6ff;
+    }
+
+    /* ===== 主内容区 ===== */
+    .container { max-width: 1100px; margin: 0 auto; padding: 28px 40px 48px; }
+
+    /* ===== 区块标题 ===== */
+    h2 {
+      color: #1e3a8a; margin: 36px 0 16px; font-size: 20px; font-weight: 700;
+      padding-left: 12px; border-left: 4px solid #2563eb;
+    }
+
+    /* ===== 卡片网格 ===== */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 16px; margin-bottom: 28px;
+    }
+    .card {
+      background: #fff; border: 1px solid #e5e7eb; border-radius: 12px;
+      padding: 18px 14px; text-align: center;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+      transition: transform 0.18s, box-shadow 0.18s;
+    }
+    .card:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(0,0,0,0.08); }
+    .card .label { display: block; font-size: 12px; color: #6b7280; margin-bottom: 6px; }
+    .card .val { font-size: 24px; font-weight: 700; color: #111827; }
+
+    /* ===== 表格 ===== */
+    .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 12px 0 24px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 480px; }
+    th {
+      background: linear-gradient(135deg, #1e3a8a, #2563eb);
+      color: #fff; padding: 10px 12px; text-align: left;
+      font-weight: 600; position: sticky; top: 0;
+    }
+    td { border-bottom: 1px solid #e5e7eb; padding: 9px 12px; }
     tr:nth-child(even) td { background: #f8fafc; }
-    img { max-width: 100%; border: 1px solid #e5e7eb; border-radius: 10px; margin: 12px 0; }
-    pre { white-space: pre-wrap; background: #0f172a; color: #e2e8f0; padding: 16px; border-radius: 10px; font-size: 13px; line-height: 1.6; }
-    .quality { background: #fffbeb; border: 1px solid #fbbf24; border-radius: 8px; padding: 12px; margin: 12px 0; }
-    .footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid #e5e7eb; color: #9ca3af; font-size: 12px; text-align: center; }
+    tr:hover td { background: #eff6ff; }
+
+    /* ===== 环比变化率颜色 ===== */
+    .change-pos { color: #16a34a; font-weight: 600; }
+    .change-neg { color: #dc2626; font-weight: 600; }
+    .change-zero { color: #6b7280; }
+
+    /* ===== 图表 ===== */
+    img { max-width: 100%; border: 1px solid #e5e7eb; border-radius: 12px; margin: 12px 0; }
+
+    /* ===== 摘要 ===== */
+    pre {
+      white-space: pre-wrap; word-wrap: break-word;
+      background: #0f172a; color: #e2e8f0;
+      padding: 20px; border-radius: 12px;
+      font-size: 13px; line-height: 1.7;
+    }
+
+    /* ===== 数据质量区域 ===== */
+    .quality {
+      background: linear-gradient(135deg, #fffbeb, #fef3c7);
+      border: 1px solid #fbbf24; border-radius: 10px;
+      padding: 16px 20px; margin: 16px 0;
+    }
+    .quality strong { font-size: 15px; }
+    .quality-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 10px; margin-top: 10px;
+    }
+    .quality-item {
+      background: rgba(255,255,255,0.7); border-radius: 8px;
+      padding: 10px 12px; text-align: center;
+    }
+    .quality-item .qi-label { font-size: 12px; color: #92400e; }
+    .quality-item .qi-val { font-size: 18px; font-weight: 700; color: #78350f; }
+
+    /* ===== 返回顶部按钮 ===== */
+    .back-to-top {
+      position: fixed; bottom: 32px; right: 32px; z-index: 200;
+      width: 44px; height: 44px; border-radius: 50%;
+      background: linear-gradient(135deg, #2563eb, #1e40af);
+      color: #fff; border: none; cursor: pointer;
+      font-size: 20px; line-height: 44px; text-align: center;
+      box-shadow: 0 4px 12px rgba(37,99,235,0.35);
+      opacity: 0; transform: translateY(16px);
+      transition: opacity 0.3s, transform 0.3s;
+      text-decoration: none; display: flex; align-items: center; justify-content: center;
+    }
+    .back-to-top.visible { opacity: 1; transform: translateY(0); }
+    .back-to-top:hover { background: linear-gradient(135deg, #1d4ed8, #1e3a8a); }
+
+    /* ===== 页脚 ===== */
+    .footer {
+      margin-top: 40px; padding: 20px 0; border-top: 1px solid #e5e7eb;
+      color: #9ca3af; font-size: 12px; text-align: center; line-height: 1.8;
+    }
+
+    /* ===== 响应式 ===== */
+    @media (max-width: 768px) {
+      .header-bar { padding: 24px 20px 18px; }
+      .header-bar h1 { font-size: 22px; }
+      .nav-bar { padding: 0 16px; }
+      .nav-bar a { padding: 10px 14px; font-size: 13px; }
+      .container { padding: 20px 16px 40px; }
+      .grid { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+      .card .val { font-size: 20px; }
+      h2 { font-size: 18px; }
+      .quality-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 480px) {
+      .header-bar { padding: 20px 14px 14px; }
+      .header-bar h1 { font-size: 19px; }
+      .container { padding: 16px 12px 32px; }
+      .grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+      .card { padding: 12px 8px; }
+      .card .val { font-size: 18px; }
+      .quality-grid { grid-template-columns: 1fr 1fr; }
+      .back-to-top { bottom: 20px; right: 20px; width: 40px; height: 40px; font-size: 18px; }
+    }
+
+    /* ===== 打印样式 ===== */
+    @media print {
+      body { background: #fff; }
+      .nav-bar, .back-to-top { display: none !important; }
+      .header-bar { background: #1e3a8a !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .container { padding: 0; }
+      .card { box-shadow: none; border: 1px solid #d1d5db; }
+      table { page-break-inside: auto; }
+      tr { page-break-inside: avoid; }
+      h2 { page-break-after: avoid; }
+      img { max-height: 400px; }
+    }
   </style>
 </head>
 <body>
-  <h1>{{ title }}</h1>
-  <div class="meta">生成时间：{{ generated_at }} | 数据来源：{{ data_source | default("用户上传") }}</div>
 
-  <div class="grid">
-    <div class="card"><strong>总记录数</strong><div class="val">{{ overview.total_records | comma(0) }}</div></div>
-    <div class="card"><strong>总指标值</strong><div class="val">{{ overview.total_value | comma }}</div></div>
-    <div class="card"><strong>均值</strong><div class="val">{{ overview.average_value | comma }}</div></div>
-    <div class="card"><strong>中位数</strong><div class="val">{{ overview.get('median_value', 0) | comma }}</div></div>
-    <div class="card"><strong>最大值</strong><div class="val">{{ overview.get('max_value', 0) | comma }}</div></div>
-    <div class="card"><strong>最小值</strong><div class="val">{{ overview.get('min_value', 0) | comma }}</div></div>
-    <div class="card"><strong>标准差</strong><div class="val">{{ overview.get('std_value', 0) | comma }}</div></div>
-    <div class="card"><strong>最新周期值</strong><div class="val">{{ overview.latest_period_value | comma }}</div></div>
+  <!-- 渐变标题栏 -->
+  <div class="header-bar" id="top">
+    <h1>{{ title }}</h1>
+    <div class="meta">生成时间：{{ generated_at }} | 数据来源：{{ data_source | default("用户上传") }}</div>
   </div>
 
-  {% if data_quality %}
-  <div class="quality">
-    <strong>📋 数据质量</strong>：
-    总行数 {{ data_quality.total_rows | comma(0) }}，
-    重复率 {{ data_quality.duplicate_rate }}，
-    缺失率 {{ data_quality.missing_rate }}
-    {% if data_quality.date_invalid_rows > 0 %}，{{ data_quality.date_invalid_rows }} 行日期无法解析{% endif %}
+  <!-- 目录导航 -->
+  <nav class="nav-bar" role="navigation" aria-label="页面导航">
+    <a href="#section-overview">概览</a>
+    <a href="#section-summary">摘要</a>
+    <a href="#section-trend">趋势</a>
+    <a href="#section-dimension">维度</a>
+    <a href="#section-preview">数据预览</a>
+  </nav>
+
+  <div class="container">
+
+    <!-- ===== 概览卡片 ===== -->
+    <h2 id="section-overview">📊 数据概览</h2>
+    <div class="grid">
+      <div class="card"><span class="label">总记录数</span><div class="val">{{ overview.total_records | comma(0) }}</div></div>
+      <div class="card"><span class="label">总指标值</span><div class="val">{{ overview.total_value | comma }}</div></div>
+      <div class="card"><span class="label">均值</span><div class="val">{{ overview.average_value | comma }}</div></div>
+      <div class="card"><span class="label">中位数</span><div class="val">{{ overview.get('median_value', 0) | comma }}</div></div>
+      <div class="card"><span class="label">最大值</span><div class="val">{{ overview.get('max_value', 0) | comma }}</div></div>
+      <div class="card"><span class="label">最小值</span><div class="val">{{ overview.get('min_value', 0) | comma }}</div></div>
+      <div class="card"><span class="label">标准差</span><div class="val">{{ overview.get('std_value', 0) | comma }}</div></div>
+      <div class="card"><span class="label">最新周期值</span><div class="val">{{ overview.latest_period_value | comma }}</div></div>
+    </div>
+
+    <!-- ===== 数据质量 ===== -->
+    {% if data_quality %}
+    <div class="quality">
+      <strong>📋 数据质量报告</strong>
+      <div class="quality-grid">
+        <div class="quality-item">
+          <div class="qi-label">总行数</div>
+          <div class="qi-val">{{ data_quality.total_rows | comma(0) }}</div>
+        </div>
+        <div class="quality-item">
+          <div class="qi-label">重复率</div>
+          <div class="qi-val">{{ data_quality.duplicate_rate }}</div>
+        </div>
+        <div class="quality-item">
+          <div class="qi-label">缺失率</div>
+          <div class="qi-val">{{ data_quality.missing_rate }}</div>
+        </div>
+        {% if data_quality.get('date_invalid_rows', 0) > 0 %}
+        <div class="quality-item">
+          <div class="qi-label">日期异常行</div>
+          <div class="qi-val">{{ data_quality.date_invalid_rows | comma(0) }}</div>
+        </div>
+        {% endif %}
+        {% if data_quality.get('null_columns') %}
+        <div class="quality-item">
+          <div class="qi-label">含空列数</div>
+          <div class="qi-val">{{ data_quality.null_columns | comma(0) }}</div>
+        </div>
+        {% endif %}
+        {% if data_quality.get('outlier_count') %}
+        <div class="quality-item">
+          <div class="qi-label">异常值数</div>
+          <div class="qi-val">{{ data_quality.outlier_count | comma(0) }}</div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- ===== 自动摘要 ===== -->
+    <h2 id="section-summary">📝 自动摘要</h2>
+    <pre>{{ summary_text }}</pre>
+
+    <!-- ===== 趋势分析 ===== -->
+    <h2 id="section-trend">📈 {{ value_label }} 趋势</h2>
+    {% if trend_chart %}
+    <img src="data:image/png;base64,{{ trend_chart }}" alt="{{ value_label }} 趋势图" />
+    {% endif %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>周期</th>
+            <th>{{ value_label }}</th>
+            <th>环比变化率</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in trend_records %}
+          <tr>
+            <td>{{ r.period }}</td>
+            <td>{{ r[value_label] | comma }}</td>
+            <td>
+              {% set change = r.get('环比变化率') %}
+              {% if change is not none %}
+                {% set change_val = change | float(0) %}
+                {% if change_val > 0 %}
+                  <span class="change-pos">▲ {{ change | pct }}</span>
+                {% elif change_val < 0 %}
+                  <span class="change-neg">▼ {{ change | pct }}</span>
+                {% else %}
+                  <span class="change-zero">{{ change | pct }}</span>
+                {% endif %}
+              {% else %}-{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ===== 维度分布 ===== -->
+    <h2 id="section-dimension">📊 {{ dimension_label }} Top 分布</h2>
+    {% if dimension_chart %}
+    <img src="data:image/png;base64,{{ dimension_chart }}" alt="{{ dimension_label }} 分布图" />
+    {% endif %}
+    {% if pie_chart %}
+    <img src="data:image/png;base64,{{ pie_chart }}" alt="{{ dimension_label }} 占比饼图" />
+    {% endif %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>{{ dimension_label }}</th>
+            <th>{{ value_label }}</th>
+            <th>占比</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in dimension_records %}
+          <tr>
+            <td>{{ r.get(dimension_label, r.values()|list|first) }}</td>
+            <td>{{ r[value_label] | comma }}</td>
+            <td>{{ r.get('占比', '-') }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ===== 数据预览 ===== -->
+    <h2 id="section-preview">🔍 原始数据预览</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>{% if preview_records %}{% for key in preview_records[0].keys() %}<th>{{ key }}</th>{% endfor %}{% endif %}</tr>
+        </thead>
+        <tbody>
+          {% for r in preview_records %}
+          <tr>{% for v in r.values() %}<td>{{ v }}</td>{% endfor %}</tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ===== 页脚 ===== -->
+    <div class="footer">
+      由 <strong>自动报表生成机器人 (Report Automation Bot)</strong> 生成<br />
+      生成时间：{{ generated_at }}
+    </div>
+
   </div>
-  {% endif %}
 
-  <h2>自动摘要</h2>
-  <pre>{{ summary_text }}</pre>
+  <!-- 返回顶部按钮 -->
+  <a href="#top" class="back-to-top" id="backToTop" aria-label="返回顶部" title="返回顶部">↑</a>
 
-  <h2>{{ value_label }} 趋势</h2>
-  {% if trend_chart %}
-  <img src="data:image/png;base64,{{ trend_chart }}" alt="趋势图" />
-  {% endif %}
-  <table>
-    <thead><tr><th>周期</th><th>{{ value_label }}</th><th>环比变化率</th></tr></thead>
-    <tbody>
-      {% for r in trend_records %}
-      <tr>
-        <td>{{ r.period }}</td>
-        <td>{{ r[value_label] | comma }}</td>
-        <td>{% if r.get('环比变化率') is not none %}{{ r['环比变化率'] | pct }}{% else %}-{% endif %}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-
-  <h2>{{ dimension_label }} Top 分布</h2>
-  {% if dimension_chart %}
-  <img src="data:image/png;base64,{{ dimension_chart }}" alt="维度分布图" />
-  {% endif %}
-  {% if pie_chart %}
-  <img src="data:image/png;base64,{{ pie_chart }}" alt="占比饼图" />
-  {% endif %}
-  <table>
-    <thead><tr><th>{{ dimension_label }}</th><th>{{ value_label }}</th><th>占比</th></tr></thead>
-    <tbody>
-      {% for r in dimension_records %}
-      <tr>
-        <td>{{ r[dimension_label] if r[dimension_label] is defined else r.values()|list|first }}</td>
-        <td>{{ r[value_label] | comma }}</td>
-        <td>{{ r.get('占比', '-') }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-
-  <h2>原始数据预览</h2>
-  <table>
-    <thead><tr>{% if preview_records %}{% for key in preview_records[0].keys() %}<th>{{ key }}</th>{% endfor %}{% endif %}</tr></thead>
-    <tbody>
-      {% for r in preview_records %}
-      <tr>{% for v in r.values() %}<td>{{ v }}</td>{% endfor %}</tr>
-      {% endfor %}
-    </tbody>
-  </table>
-
-  <div class="footer">自动报表生成机器人 | {{ generated_at }}</div>
+  <script>
+    (function () {
+      var btn = document.getElementById('backToTop');
+      if (!btn) return;
+      window.addEventListener('scroll', function () {
+        if (window.scrollY > 300) {
+          btn.classList.add('visible');
+        } else {
+          btn.classList.remove('visible');
+        }
+      });
+    })();
+  </script>
 </body>
 </html>

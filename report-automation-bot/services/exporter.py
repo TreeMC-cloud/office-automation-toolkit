@@ -142,12 +142,12 @@ def _write_data_sheet(ws, df: pd.DataFrame) -> None:
 
     # 列宽自适应
     for col_idx, col_name in enumerate(columns, 1):
-        max_len = len(str(col_name))
+        max_len = _display_width(str(col_name))
         for r in range(2, min(len(df) + 2, 102)):
             v = ws.cell(row=r, column=col_idx).value
             if v is not None:
-                max_len = max(max_len, min(len(str(v)), 40))
-        ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len * 1.3 + 4, 50)
+                max_len = max(max_len, min(_display_width(str(v)), 50))
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 4, 55)
 
     # 自动筛选
     if columns:
@@ -162,5 +162,16 @@ def _embed_chart(ws, b64_str: str, start_row: int) -> None:
         img.width = 700
         img.height = 350
         ws.add_image(img, f"A{start_row}")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[exporter] 图表嵌入失败: {e}")
+
+
+def _display_width(text: str) -> int:
+    """估算文本显示宽度（中文字符算2，其他算1）"""
+    width = 0
+    for ch in text:
+        if '\u4e00' <= ch <= '\u9fff' or '\u3000' <= ch <= '\u303f' or '\uff00' <= ch <= '\uffef':
+            width += 2
+        else:
+            width += 1
+    return width

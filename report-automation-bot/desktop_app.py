@@ -63,6 +63,14 @@ class ReportApp(ctk.CTk):
             "dingtalk_url": "", "wechat_url": "",
         }
 
+        # 从持久化配置恢复
+        saved = self._config
+        if saved.get("notify_config"):
+            nc = saved["notify_config"]
+            for k in self._notify_config:
+                if k in nc and k != "password":
+                    self._notify_config[k] = nc[k]
+
         self._build_ui()
 
     def _build_ui(self):
@@ -108,6 +116,8 @@ class ReportApp(ctk.CTk):
         else:
             self._upload_btn.configure(state="normal")
             self._file_label.configure(text="未选择文件")
+            self.raw_df = None
+            self._refresh_preview()
 
     def _pick_files(self):
         paths = filedialog.askopenfilenames(
@@ -248,6 +258,24 @@ class ReportApp(ctk.CTk):
                                           command=self._cancel_generate, state="disabled")
         self._cancel_btn.pack(fill="x", pady=(0, 4))
 
+        # 定时调度
+        sched_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        sched_frame.pack(fill="x", pady=(4, 8))
+        
+        self._sched_var = ctk.BooleanVar(value=False)
+        self._sched_switch = ctk.CTkSwitch(sched_frame, text="定时自动生成", variable=self._sched_var,
+                                            command=self._toggle_scheduler)
+        self._sched_switch.pack(side="left", padx=(0, 12))
+        
+        ctk.CTkLabel(sched_frame, text="间隔:").pack(side="left")
+        self._sched_interval_var = ctk.StringVar(value="每小时")
+        self._sched_interval_cb = ctk.CTkComboBox(sched_frame, variable=self._sched_interval_var,
+                                                    values=["每小时", "每6小时", "每天"], state="readonly", width=100)
+        self._sched_interval_cb.pack(side="left", padx=4)
+        
+        self._sched_status = ctk.CTkLabel(sched_frame, text="未启动", text_color="gray", font=ctk.CTkFont(size=11))
+        self._sched_status.pack(side="left", padx=8)
+
         self._status_label = ctk.CTkLabel(parent, text="", text_color="gray")
         self._status_label.pack(pady=(0, 2))
 
@@ -288,7 +316,7 @@ class ReportApp(ctk.CTk):
 
     def _generate_worker(self, params: dict):
         try:
-            df = self.raw_df
+            df = self.raw_df.copy()
             date_col = params["date_col"]
             value_col = params["value_col"]
             dim_col = params["dim_col"]
@@ -430,6 +458,24 @@ class ReportApp(ctk.CTk):
         self._cancel_btn.configure(state="disabled")
         self._update_status("⏹ 正在停止…")
 
+    def _toggle_scheduler(self):
+        interval_map = {"每小时": 3600, "每6小时": 21600, "每天": 86400}
+        if self._sched_var.get():
+            interval = interval_map.get(self._sched_interval_var.get(), 3600)
+            self._scheduler = ReportScheduler(self._scheduled_generate, interval)
+            self._scheduler.start()
+            self._sched_status.configure(text=f"已启动 | 下次: {self._scheduler.next_run_time()}", text_color="green")
+        else:
+            if self._scheduler:
+                self._scheduler.stop()
+                self._scheduler = None
+            self._sched_status.configure(text="未启动", text_color="gray")
+
+    def _scheduled_generate(self):
+        """定时调度触发的生成"""
+        if self.raw_df is not None and not self.raw_df.empty:
+            self.after(0, self._on_generate)
+
     def _on_generate_cancelled(self):
         self._progress.pack_forget()
         self._gen_btn.configure(state="normal", text="生成报表")
@@ -471,11 +517,13 @@ class ReportApp(ctk.CTk):
             ("标准差", f"{overview.get('std_value', 0):,.2f}"),
             ("最新周期值", f"{overview['latest_period_value']:,.2f}"),
         ]
-        for i in range(len(metrics)):
+        for i in range(4):
             cards.columnconfigure(i, weight=1)
         for i, (label, value) in enumerate(metrics):
+            row_idx = i // 4
+            col_idx = i % 4
             card = ctk.CTkFrame(cards)
-            card.grid(row=0, column=i, sticky="nsew", padx=3, pady=4)
+            card.grid(row=row_idx, column=col_idx, sticky="nsew", padx=3, pady=3)
             ctk.CTkLabel(card, text=label, text_color="gray", font=ctk.CTkFont(size=11)).pack(padx=6, pady=(6, 0))
             ctk.CTkLabel(card, text=value, font=ctk.CTkFont(size=16, weight="bold")).pack(padx=6, pady=(0, 6))
 
@@ -546,8 +594,11 @@ class ReportApp(ctk.CTk):
             tree.insert("", "end", values=[str(row[c]) for c in cols])
         hsb = ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)
         tree.configure(xscrollcommand=hsb.set)
-        tree.pack(fill="x")
-        hsb.pack(fill="x")
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        hsb.pack(side="bottom", fill="x")
 
     def _fill_tab_summary(self, parent, res):
         ctk.CTkLabel(parent, text="智能摘要", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=8, pady=(8, 2))
@@ -639,8 +690,10 @@ class ReportApp(ctk.CTk):
         self._notify_config["smtp_port"] = self._smtp_port.get().strip()
         self._notify_config["sender"] = self._sender.get().strip()
         self._notify_config["recipients"] = self._recipients.get().strip()
-        self._notify_config["dingtalk_url"] = self._dingtalk_entry.get().strip()
-        self._notify_config["wechat_url"] = self._wechat_entry.get().strip()
+        dingtalk_url = self._dingtalk_entry.get().strip() if hasattr(self, '_dingtalk_entry') else ""
+        wechat_url = self._wechat_entry.get().strip() if hasattr(self, '_wechat_entry') else ""
+        self._notify_config["dingtalk_url"] = dingtalk_url
+        self._notify_config["wechat_url"] = wechat_url
 
         notification_text = build_notification_text(res["summary_text"], res["overview"])
         messages: list[str] = []
@@ -654,11 +707,9 @@ class ReportApp(ctk.CTk):
                 if webhook:
                     resp = send_feishu(webhook, notification_text, overview=res["overview"])
                     messages.append(f"飞书发送完成：{resp}")
-                dingtalk_url = self._dingtalk_entry.get().strip()
                 if dingtalk_url:
                     resp = send_dingtalk(dingtalk_url, notification_text, overview=res["overview"])
                     messages.append(f"钉钉发送完成：{resp}")
-                wechat_url = self._wechat_entry.get().strip()
                 if wechat_url:
                     resp = send_wechat_work(wechat_url, notification_text)
                     messages.append(f"企业微信发送完成：{resp}")
@@ -679,6 +730,11 @@ class ReportApp(ctk.CTk):
                 self.after(0, lambda: messagebox.showinfo("通知结果", "\n".join(messages)))
             except Exception as e:
                 self.after(0, lambda: messagebox.showerror("发送失败", str(e)))
+
+        # 持久化通知配置（不保存密码）
+        save_cfg = {k: v for k, v in self._notify_config.items() if k != "password"}
+        self._config["notify_config"] = save_cfg
+        save_config(self._config)
 
         threading.Thread(target=_worker, daemon=True).start()
 

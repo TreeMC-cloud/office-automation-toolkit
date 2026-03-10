@@ -32,30 +32,34 @@ def build_line_chart_base64(
     y = dataframe[y_column].astype(float).tolist()
     width = max(8, min(len(x) * 0.6, 16))
     fig, ax1 = plt.subplots(figsize=(width, 4.5))
+    try:
+        ax1.plot(x, y, marker="o", color=COLORS[0], linewidth=2, markersize=4, label=y_column)
+        ax1.set_title(title, fontsize=14, fontweight="bold", pad=12)
+        ax1.grid(axis="y", linestyle="--", alpha=0.3)
+        ax1.set_ylabel(y_column, color=COLORS[0])
 
-    ax1.plot(x, y, marker="o", color=COLORS[0], linewidth=2, markersize=4, label=y_column)
-    ax1.set_title(title, fontsize=14, fontweight="bold", pad=12)
-    ax1.grid(axis="y", linestyle="--", alpha=0.3)
-    ax1.set_ylabel(y_column, color=COLORS[0])
+        # 数据标签（间隔显示，避免密集）
+        step = max(1, len(x) // 12)
+        for i in range(0, len(x), step):
+            ax1.annotate(f"{y[i]:,.0f}", (x[i], y[i]), textcoords="offset points",
+                         xytext=(0, 8), ha="center", fontsize=8, color=COLORS[0])
 
-    # 数据标签（间隔显示，避免密集）
-    step = max(1, len(x) // 12)
-    for i in range(0, len(x), step):
-        ax1.annotate(f"{y[i]:,.0f}", (x[i], y[i]), textcoords="offset points",
-                     xytext=(0, 8), ha="center", fontsize=8, color=COLORS[0])
+        # 环比变化率（双 Y 轴）
+        if change_column and change_column in dataframe.columns:
+            changes = dataframe[change_column].astype(float).tolist()
+            # 过滤 NaN
+            changes = [0 if (c != c) else c for c in changes]  # NaN != NaN
+            ax2 = ax1.twinx()
+            ax2.bar(x, changes, alpha=0.25, color=COLORS[3], width=0.6, label="环比变化率")
+            ax2.set_ylabel("环比变化率 (%)", color=COLORS[3])
+            ax2.tick_params(axis="y", labelcolor=COLORS[3])
+            ax2.axhline(y=0, color="gray", linewidth=0.5, linestyle="--")
 
-    # 环比变化率（双 Y 轴）
-    if change_column and change_column in dataframe.columns:
-        changes = dataframe[change_column].astype(float).tolist()
-        ax2 = ax1.twinx()
-        ax2.bar(x, changes, alpha=0.25, color=COLORS[3], width=0.6, label="环比变化率")
-        ax2.set_ylabel("环比变化率 (%)", color=COLORS[3])
-        ax2.tick_params(axis="y", labelcolor=COLORS[3])
-        ax2.axhline(y=0, color="gray", linewidth=0.5, linestyle="--")
-
-    _auto_xticks(ax1, x)
-    fig.tight_layout()
-    return _fig_to_base64(fig)
+        _auto_xticks(ax1, x)
+        fig.tight_layout()
+        return _fig_to_base64(fig)
+    finally:
+        plt.close(fig)
 
 
 def build_bar_chart_base64(
@@ -70,18 +74,21 @@ def build_bar_chart_base64(
     colors = [COLORS[i % len(COLORS)] for i in range(len(x))]
 
     fig, ax = plt.subplots(figsize=(max(6, len(x) * 0.8), 4.5))
-    bars = ax.bar(x, y, color=colors, width=0.6)
-    ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
-    ax.grid(axis="y", linestyle="--", alpha=0.3)
+    try:
+        bars = ax.bar(x, y, color=colors, width=0.6)
+        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+        ax.grid(axis="y", linestyle="--", alpha=0.3)
 
-    # 数据标签
-    for bar, val in zip(bars, y):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
-                f"{val:,.0f}", ha="center", va="bottom", fontsize=9)
+        # 数据标签
+        for bar, val in zip(bars, y):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
+                    f"{val:,.0f}", ha="center", va="bottom", fontsize=9)
 
-    _auto_xticks(ax, x)
-    fig.tight_layout()
-    return _fig_to_base64(fig)
+        _auto_xticks(ax, x)
+        fig.tight_layout()
+        return _fig_to_base64(fig)
+    finally:
+        plt.close(fig)
 
 
 def build_pie_chart_base64(
@@ -93,18 +100,29 @@ def build_pie_chart_base64(
 
     labels = dataframe[label_column].astype(str).tolist()
     values = dataframe[value_column].astype(float).tolist()
+
+    # 过滤负值
+    mask = [v >= 0 for v in values]
+    labels = [l for l, m in zip(labels, mask) if m]
+    values = [v for v, m in zip(values, mask) if m]
+    if not values:
+        return ""
+
     colors = [COLORS[i % len(COLORS)] for i in range(len(labels))]
 
     fig, ax = plt.subplots(figsize=(7, 5))
-    wedges, texts, autotexts = ax.pie(
-        values, labels=labels, colors=colors, autopct="%1.1f%%",
-        startangle=90, pctdistance=0.75,
-    )
-    for t in autotexts:
-        t.set_fontsize(9)
-    ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
-    fig.tight_layout()
-    return _fig_to_base64(fig)
+    try:
+        wedges, texts, autotexts = ax.pie(
+            values, labels=labels, colors=colors, autopct="%1.1f%%",
+            startangle=90, pctdistance=0.75,
+        )
+        for t in autotexts:
+            t.set_fontsize(9)
+        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+        fig.tight_layout()
+        return _fig_to_base64(fig)
+    finally:
+        plt.close(fig)
 
 
 def build_multi_line_base64(
@@ -117,18 +135,20 @@ def build_multi_line_base64(
     x = dataframe[x_column].astype(str).tolist()
     width = max(8, min(len(x) * 0.6, 16))
     fig, ax = plt.subplots(figsize=(width, 4.5))
+    try:
+        for i, col in enumerate(y_columns):
+            y = dataframe[col].astype(float).tolist()
+            ax.plot(x, y, marker="o", color=COLORS[i % len(COLORS)],
+                    linewidth=2, markersize=4, label=col)
 
-    for i, col in enumerate(y_columns):
-        y = dataframe[col].astype(float).tolist()
-        ax.plot(x, y, marker="o", color=COLORS[i % len(COLORS)],
-                linewidth=2, markersize=4, label=col)
-
-    ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
-    ax.grid(axis="y", linestyle="--", alpha=0.3)
-    ax.legend(fontsize=9)
-    _auto_xticks(ax, x)
-    fig.tight_layout()
-    return _fig_to_base64(fig)
+        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+        ax.grid(axis="y", linestyle="--", alpha=0.3)
+        ax.legend(fontsize=9)
+        _auto_xticks(ax, x)
+        fig.tight_layout()
+        return _fig_to_base64(fig)
+    finally:
+        plt.close(fig)
 
 
 def build_heatmap_base64(pivot_df: pd.DataFrame, title: str) -> str:
@@ -139,23 +159,25 @@ def build_heatmap_base64(pivot_df: pd.DataFrame, title: str) -> str:
     data = pivot_df.values.astype(float)
     fig, ax = plt.subplots(figsize=(max(6, pivot_df.shape[1] * 0.8),
                                      max(4, pivot_df.shape[0] * 0.5)))
+    try:
+        im = ax.imshow(data, cmap="YlOrRd", aspect="auto")
+        fig.colorbar(im, ax=ax)
 
-    im = ax.imshow(data, cmap="YlOrRd", aspect="auto")
-    fig.colorbar(im, ax=ax)
+        ax.set_xticks(range(len(pivot_df.columns)))
+        ax.set_xticklabels([str(c) for c in pivot_df.columns], rotation=30, ha="right", fontsize=9)
+        ax.set_yticks(range(len(pivot_df.index)))
+        ax.set_yticklabels([str(i) for i in pivot_df.index], fontsize=9)
 
-    ax.set_xticks(range(len(pivot_df.columns)))
-    ax.set_xticklabels([str(c) for c in pivot_df.columns], rotation=30, ha="right", fontsize=9)
-    ax.set_yticks(range(len(pivot_df.index)))
-    ax.set_yticklabels([str(i) for i in pivot_df.index], fontsize=9)
+        # 每个格子显示数值
+        for i in range(data.shape[0]):
+            for j in range(data.shape[1]):
+                ax.text(j, i, f"{data[i, j]:,.0f}", ha="center", va="center", fontsize=8)
 
-    # 每个格子显示数值
-    for i in range(data.shape[0]):
-        for j in range(data.shape[1]):
-            ax.text(j, i, f"{data[i, j]:,.0f}", ha="center", va="center", fontsize=8)
-
-    ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
-    fig.tight_layout()
-    return _fig_to_base64(fig)
+        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+        fig.tight_layout()
+        return _fig_to_base64(fig)
+    finally:
+        plt.close(fig)
 
 
 # ---------------------------------------------------------------------------

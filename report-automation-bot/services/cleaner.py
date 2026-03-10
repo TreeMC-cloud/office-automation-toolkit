@@ -44,7 +44,18 @@ def coerce_dataframe(
 
     # 日期转换
     if date_column in df.columns:
+        # 先尝试标准解析
         df[date_column] = pd.to_datetime(df[date_column], errors="coerce")
+        # 对失败的行尝试常见格式
+        mask = df[date_column].isna()
+        if mask.any():
+            for fmt in ["%Y%m%d", "%Y/%m/%d", "%d/%m/%Y", "%m/%d/%Y", "%Y年%m月%d日"]:
+                still_na = df[date_column].isna()
+                if not still_na.any():
+                    break
+                df.loc[still_na, date_column] = pd.to_datetime(
+                    df.loc[still_na, date_column].astype(str), format=fmt, errors="coerce"
+                )
 
     # 数值转换 + 填充
     for col in numeric_columns:
@@ -83,3 +94,22 @@ def compute_data_quality(dataframe: pd.DataFrame, date_column: str = "") -> dict
         "missing_rate": f"{missing_cells / total_cells * 100:.1f}%" if total_cells > 0 else "0%",
         "date_invalid_rows": date_invalid,
     }
+
+
+def clip_outliers(df: pd.DataFrame, columns: list[str], method: str = "iqr") -> pd.DataFrame:
+    """异常值裁剪。method: 'iqr' 或 'zscore'"""
+    result = df.copy()
+    for col in columns:
+        if col not in result.columns:
+            continue
+        s = pd.to_numeric(result[col], errors="coerce")
+        if method == "iqr":
+            q1, q3 = s.quantile(0.25), s.quantile(0.75)
+            iqr = q3 - q1
+            lower, upper = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+            result[col] = s.clip(lower, upper)
+        elif method == "zscore":
+            mean, std = s.mean(), s.std()
+            if std > 0:
+                result[col] = s.clip(mean - 3 * std, mean + 3 * std)
+    return result

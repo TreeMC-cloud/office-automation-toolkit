@@ -33,11 +33,15 @@ def compute_overview(
 
     latest_label, latest_val = "未识别", 0.0
     if dataframe[date_column].notna().any():
-        latest = dataframe[date_column].max().normalize()
-        latest_val = round(float(
-            dataframe.loc[dataframe[date_column].dt.normalize() == latest, value_column].sum()
-        ), 2)
-        latest_label = latest.strftime("%Y-%m-%d")
+        latest = dataframe[date_column].max()
+        if pd.isna(latest):
+            latest_val, latest_label = 0.0, "未识别"
+        else:
+            latest = latest.normalize()
+            latest_val = round(float(
+                dataframe.loc[dataframe[date_column].dt.normalize() == latest, value_column].sum()
+            ), 2)
+            latest_label = latest.strftime("%Y-%m-%d")
 
     return {
         "total_records": n,
@@ -75,7 +79,7 @@ def aggregate_by_period(
 
     # 环比变化率
     grouped["环比变化率"] = grouped[value_column].pct_change() * 100
-    grouped["环比变化率"] = grouped["环比变化率"].round(2)
+    grouped["环比变化率"] = grouped["环比变化率"].replace([np.inf, -np.inf], np.nan).round(2)
 
     grouped["period"] = grouped["period"].dt.strftime("%Y-%m-%d")
     return grouped
@@ -106,8 +110,11 @@ def aggregate_by_dimension(
     top = grouped.head(top_n).copy()
     rest = grouped.iloc[top_n:]
 
-    # 占比
-    top["占比"] = (top[value_column] / total * 100).round(1).astype(str) + "%"
+    # 占比（仅 sum/count 时有意义）
+    if agg_func in ("sum", "count") and total > 0:
+        top["占比"] = (top[value_column] / total * 100).round(1).astype(str) + "%"
+    else:
+        top["占比"] = "-"
 
     # 其他汇总行
     if not rest.empty:
@@ -159,12 +166,12 @@ def _detect_consecutive(values: list) -> tuple[str, int]:
 
     up_count, down_count = 0, 0
     for i in range(len(values) - 1, 0, -1):
-        if values[i] > values[i - 1]:
+        if values[i] >= values[i - 1]:
             up_count += 1
         else:
             break
     for i in range(len(values) - 1, 0, -1):
-        if values[i] < values[i - 1]:
+        if values[i] <= values[i - 1]:
             down_count += 1
         else:
             break

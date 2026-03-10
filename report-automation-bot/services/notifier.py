@@ -54,7 +54,7 @@ def send_feishu(webhook_url: str, text: str, overview: dict | None = None, max_r
                 return json.dumps(result, ensure_ascii=False)
         except Exception as e:
             if attempt < max_retries - 1:
-                time.sleep(1)
+                time.sleep(2 ** attempt)
                 continue
             raise
 
@@ -116,7 +116,7 @@ def send_dingtalk(webhook_url: str, text: str, overview: dict | None = None, max
                 return json.dumps(result, ensure_ascii=False)
         except Exception as e:
             if attempt < max_retries - 1:
-                time.sleep(1)
+                time.sleep(2 ** attempt)
                 continue
             raise
 
@@ -140,7 +140,7 @@ def send_wechat_work(webhook_url: str, text: str, max_retries: int = 3) -> str:
                 return json.dumps(result, ensure_ascii=False)
         except Exception as e:
             if attempt < max_retries - 1:
-                time.sleep(1)
+                time.sleep(2 ** attempt)
                 continue
             raise
 
@@ -172,7 +172,8 @@ def send_email(
         part = MIMEBase("application", "octet-stream")
         part.set_payload(attachment)
         encoders.encode_base64(part)
-        part.add_header("Content-Disposition", f"attachment; filename={attachment_name}")
+        part.add_header("Content-Disposition", "attachment",
+                        filename=("utf-8", "", attachment_name))
         msg.attach(part)
 
     for attempt in range(max_retries):
@@ -192,6 +193,6 @@ def send_email(
             return
         except Exception as e:
             if attempt < max_retries - 1:
-                time.sleep(1)
+                time.sleep(2 ** attempt)
                 continue
             raise
